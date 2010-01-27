@@ -1,0 +1,12 @@
+APNG Assembler 2.0
+
+by Max Stepin 
+maxst@users.sourceforge.net
+---------------------------
+Creates APNG animation from PNG image sequence.
+
+Usage: 
+apngasm.exe output.png frame000.png [1] [10] [/f]
+
+1/10 is the default delay. Use /f to skip the first frame.
+
