@@ -1,0 +1,33 @@
+# Object files
+*.o
+*.lo
+*.obj
+
+# Linker output
+*.ilk
+*.map
+*.exp
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Static libraries
+*.a
+*.la
+*.lib
+
+# Shared libraries
+*.so
+*.so.*
+*.dll
+*.dylib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# Debug files
+*.idb
+*.pdb
