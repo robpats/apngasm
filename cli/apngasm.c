@@ -1,6 +1,6 @@
-/* APNG Assembler 2.0
+/* APNG Assembler 2.1
  *
- * Copyright (c) 2009 Max Stepin
+ * Copyright (c) 2009,2010 Max Stepin
  * maxst at users.sourceforge.net
  *
  * GNU LGPL information
@@ -21,44 +21,43 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
  */
+#define FIREFOX_BUG_441971_WORKAROUND
+#define FIREFOX_BUG_546272_WORKAROUND
+
 #define PNG_ZBUF_SIZE  32768
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdarg.h>
-#include "png.h"
-
-#ifndef WIN32
-  #define _stricmp strcasecmp
-#endif
+#include <string.h>
+#include "png.h"     /* original (unpatched) libpng is ok */
+#include "zlib.h"
 
 #if defined(_MSC_VER) && _MSC_VER >= 1300
-inline unsigned short swap16(unsigned short data) {return(_byteswap_ushort(data));}
-inline unsigned int swap32(unsigned int data) {return(_byteswap_ulong(data));}
-#elif __linux__
+#define swap16(data) _byteswap_ushort(data)
+#define swap32(data) _byteswap_ulong(data)
+#elif defined(__linux__)
 #include <byteswap.h>
-inline unsigned short swap16(unsigned short data) {return(bswap_16(data));}
-inline unsigned int swap32(unsigned int data) {return(bswap_32(data));}
+#define swap16(data) bswap_16(data)
+#define swap32(data) bswap_32(data)
+#elif defined(__FreeBSD__)
+#include <sys/endian.h>
+#define swap16(data) bswap16(data)
+#define swap32(data) bswap32(data)
+#elif defined(__APPLE__)
+#include <libkern/OSByteOrder.h>
+#define swap16(data) OSSwapInt16(data)
+#define swap32(data) OSSwapInt32(data)
 #else
-inline unsigned short swap16(unsigned short data) {return((data >> 8) | (data << 8));}
-inline unsigned int swap32(unsigned int data) {return((swap16(data) << 16) | swap16(data >> 16));}
+unsigned short swap16(unsigned short data) {return((data & 0xFF) << 8) | ((data >> 8) & 0xFF);}
+unsigned int swap32(unsigned int data) {return((data & 0xFF) << 24) | ((data & 0xFF00) << 8) | ((data >> 8) & 0xFF00) | ((data >> 24) & 0xFF);}
 #endif
 
-unsigned char png_sign[8] = {137,  80,  78,  71,  13,  10,  26,  10};
-unsigned char png_Software[27] = { 83, 111, 102, 116, 119, 97, 114, 101, '\0', 
-                                   65,  80,  78,  71,  32, 65, 115, 115, 101, 
-                                  109,  98, 108, 101, 114, 32,  50,  46,  48};
+typedef struct { z_stream zstream; unsigned char * zbuf; int x, y, w, h, valid; } OP;
+typedef struct { unsigned int i, num, trans; } STATS;
+typedef struct rgb_struct { unsigned char r, g, b; } rgb;
 
-struct OP 
-{
-  z_stream        zstream;
-  unsigned char * zbuf;
-  int  x;
-  int  y;
-  int  w;
-  int  h;
-  int  valid;
-} op[12];
+OP    op[12];
+STATS stats[256];
 
 unsigned int next_seq_num = 0;
 unsigned char * row_buf;
@@ -66,22 +65,34 @@ unsigned char * sub_row;
 unsigned char * up_row;
 unsigned char * avg_row;
 unsigned char * paeth_row;
+unsigned char png_sign[8] = {137,  80,  78,  71,  13,  10,  26,  10};
+unsigned char png_Software[27] = { 83, 111, 102, 116, 119, 97, 114, 101, '\0', 
+                                   65,  80,  78,  71,  32, 65, 115, 115, 101, 
+                                  109,  98, 108, 101, 114, 32,  50,  46,  49};
 
-unsigned char * LoadPNG(char * szImage, int *pWidth, int *pHeight, int *pDepth, int *pType, png_color *pPal, int *pPsize, unsigned char *pTrns, int *pTsize, int *pRes)
+int cmp_stats( const void *arg1, const void *arg2 )
+{
+  if ( ((STATS*)arg2)->trans == ((STATS*)arg1)->trans )
+    return ((STATS*)arg2)->num - ((STATS*)arg1)->num;
+  else
+    return ((STATS*)arg2)->trans - ((STATS*)arg1)->trans;
+}
+
+unsigned char * LoadPNG(char * szImage, int *pWidth, int *pHeight, int *pDepth, int *pType, rgb *pPal, int *pPsize, unsigned char *pTrns, int *pTsize, int *pRes)
 {
   FILE          * f;
-  png_structp     png_ptr;
-  png_infop       info_ptr;
-  png_bytepp      row_pointers = NULL;
   unsigned char * image_data = NULL;
-  png_uint_32     width, height, i, rowbytes;
-  int             depth, coltype;
 
   *pRes = 0;
 
   if ((f = fopen(szImage, "rb")) != 0)
   {
-    unsigned char sig[8];
+    png_structp     png_ptr;
+    png_infop       info_ptr;
+    png_bytepp      row_pointers = NULL;
+    png_uint_32     width, height, i, rowbytes;
+    int             depth, coltype;
+    unsigned char   sig[8];
 
     fread(sig, 1, 8, f);
     if (png_sig_cmp(sig, 0, 8) == 0)
@@ -107,8 +118,10 @@ unsigned char * LoadPNG(char * szImage, int *pWidth, int *pHeight, int *pDepth, 
 
             if (png_get_valid(png_ptr, info_ptr, PNG_INFO_PLTE))
             {
-              memcpy(pPal, info_ptr->palette, info_ptr->num_palette * sizeof(png_color));
-              *pPsize = info_ptr->num_palette;
+              png_colorp     palette;
+
+              png_get_PLTE(png_ptr, info_ptr, &palette, pPsize);
+              memcpy(pPal, palette, *pPsize * 3);
             }
             else
               *pPsize = 0;
@@ -122,29 +135,28 @@ unsigned char * LoadPNG(char * szImage, int *pWidth, int *pHeight, int *pDepth, 
 
               if (coltype == PNG_COLOR_TYPE_GRAY)
               {
-                pTrns[0] = trans_color->gray >> 8;
-                pTrns[1] = trans_color->gray & 0xFF;
                 if (depth == 16)
-                {
-                  pTrns[1] = pTrns[0]; pTrns[0] = 0;
-                }
+                  trans_color->gray >>= 8;
+
+                pTrns[0] = 0;
+                pTrns[1] = trans_color->gray & 0xFF;
                 *pTsize = 2;
               }
               else
               if (coltype == PNG_COLOR_TYPE_RGB)
               {
-                pTrns[0] = trans_color->red >> 8;
-                pTrns[1] = trans_color->red & 0xFF;
-                pTrns[2] = trans_color->green >> 8;
-                pTrns[3] = trans_color->green & 0xFF;
-                pTrns[4] = trans_color->blue >> 8;
-                pTrns[5] = trans_color->blue & 0xFF;
                 if (depth == 16)
                 {
-                  pTrns[1] = pTrns[0]; pTrns[0] = 0;
-                  pTrns[3] = pTrns[2]; pTrns[2] = 0;
-                  pTrns[5] = pTrns[4]; pTrns[4] = 0;
+                  trans_color->red >>= 8;
+                  trans_color->green >>= 8;
+                  trans_color->blue >>= 8;
                 }
+                pTrns[0] = 0;
+                pTrns[1] = trans_color->red & 0xFF;
+                pTrns[2] = 0;
+                pTrns[3] = trans_color->green & 0xFF;
+                pTrns[4] = 0;
+                pTrns[5] = trans_color->blue & 0xFF;
                 *pTsize = 6;
               }
               else
@@ -220,6 +232,198 @@ unsigned char * LoadPNG(char * szImage, int *pWidth, int *pHeight, int *pDepth, 
   return image_data;
 }
 
+unsigned char * LoadTGA(char * szImage, int *pWidth, int *pHeight, int *pDepth, int *pType, rgb *pPal, int *pPsize, unsigned char *pTrns, int *pTsize, int *pRes)
+{
+  FILE          * f;
+  unsigned char * image_data = NULL;
+
+  *pRes = 0;
+
+  if ((f = fopen(szImage, "rb")) != 0)
+  {
+    int i, j, k, n, rowbytes, compr;
+    unsigned char c;
+    unsigned char col[4];
+    unsigned char fh[18];
+    unsigned char * pRow;
+
+    fread(fh, 1, 18, f);
+
+    *pWidth  = fh[12] + fh[13]*256;
+    *pHeight = fh[14] + fh[15]*256;
+    *pDepth  = 8;
+    *pType   = -1;
+    *pPsize  = 0;
+    *pTsize  = 0;
+
+    rowbytes = *pWidth;
+    if ((fh[2] & 7) == 3)
+      *pType = 0;
+    else
+    if (((fh[2] & 7) == 2) && (fh[16] == 24))
+    {
+      *pType = 2;
+      rowbytes = *pWidth * 3;
+    }
+    else
+    if (((fh[2] & 7) == 2) && (fh[16] == 32))
+    {
+      *pType = 6;
+      rowbytes = *pWidth * 4;
+    }
+    else
+    if (((fh[2] & 7) == 1) && (fh[1] == 1) && (fh[7] == 24))
+      *pType = 3;
+
+    compr = fh[2] & 8;
+
+    if (*pType >= 0)
+    {
+      if ((image_data = (unsigned char *)malloc(*pHeight * rowbytes)) != NULL)
+      {
+        if (fh[0] != 0)
+          fseek( f, fh[0], SEEK_CUR );
+
+        if (fh[1] == 1)
+        {
+          int start = fh[3] + fh[4]*256;
+          int size  = fh[5] + fh[6]*256;
+
+          for (i=start; i<start+size, i<256; i++)
+          {
+            fread(&col, 3, 1, f);
+            pPal[i].r = col[2];
+            pPal[i].g = col[1];
+            pPal[i].b = col[0];
+          }
+          *pPsize = i;
+
+          if (start+size > 256)
+            fseek( f, (start+size-256)*3, SEEK_CUR );
+        }
+
+        if (fh[17] == 0) 
+          pRow = image_data+(*pHeight-1)*rowbytes;
+        else
+          pRow = image_data;
+
+        for (j=0; j<*pHeight; j++)
+        {
+          if (compr == 0)
+          {
+            if (*pType == 6)
+            {
+              for (i=0; i<*pWidth; i++)
+              {
+                fread(&col, 4, 1, f);
+                pRow[i*4]   = col[2];
+                pRow[i*4+1] = col[1];
+                pRow[i*4+2] = col[0];
+                pRow[i*4+3] = col[3];
+              }
+            }
+            else
+            if (*pType == 2)
+            {
+              for (i=0; i<*pWidth; i++)
+              {
+                fread(&col, 3, 1, f);
+                pRow[i*3]   = col[2];
+                pRow[i*3+1] = col[1];
+                pRow[i*3+2] = col[0];
+              }
+            }
+            else
+              fread(pRow, 1, rowbytes, f);
+          }
+          else
+          {
+            i = 0;
+            while (i<*pWidth)
+            {
+              fread(&c, 1, 1, f);
+              n = (c & 0x7F)+1;
+
+              if ((c & 0x80) != 0)
+              {
+                if (*pType == 6)
+                {
+                  fread(&col, 4, 1, f);
+                  for (k=0; k<n; k++)
+                  {
+                    pRow[(i+k)*4]   = col[2];
+                    pRow[(i+k)*4+1] = col[1];
+                    pRow[(i+k)*4+2] = col[0];
+                    pRow[(i+k)*4+3] = col[3];
+                  }
+                }
+                else
+                if (*pType == 2)
+                {
+                  fread(&col, 3, 1, f);
+                  for (k=0; k<n; k++)
+                  {
+                    pRow[(i+k)*3]   = col[2];
+                    pRow[(i+k)*3+1] = col[1];
+                    pRow[(i+k)*3+2] = col[0];
+                  }
+                }
+                else
+                {
+                  fread(&col, 1, 1, f);
+                  memset(pRow+i, col[0], n);
+                }
+              }
+              else
+              {
+                if (*pType == 6)
+                {
+                  for (k=0; k<n; k++)
+                  {
+                    fread(&col, 4, 1, f);
+                    pRow[(i+k)*4]   = col[2];
+                    pRow[(i+k)*4+1] = col[1];
+                    pRow[(i+k)*4+2] = col[0];
+                    pRow[(i+k)*4+3] = col[3];
+                  }
+                }
+                else
+                if (*pType == 2)
+                {
+                  for (k=0; k<n; k++)
+                  {
+                    fread(&col, 3, 1, f);
+                    pRow[(i+k)*3]   = col[2];
+                    pRow[(i+k)*3+1] = col[1];
+                    pRow[(i+k)*3+2] = col[0];
+                  }
+                }
+                else
+                  fread(pRow+i, 1, n, f);
+              }
+              i+=n;
+            }
+          }
+          if (fh[17] == 0) 
+            pRow -= rowbytes;
+          else
+            pRow += rowbytes;
+        }
+      }
+      else
+        *pRes = 3;
+    }
+    else
+      *pRes = 2;
+
+    fclose(f);
+  }
+  else
+    *pRes = 1;
+
+  return image_data;
+}
+
 void write_chunk(FILE * f, const char * name, unsigned char * data, unsigned int length)
 {
   unsigned int crc = crc32(0, Z_NULL, 0);
@@ -243,8 +447,8 @@ void write_chunk(FILE * f, const char * name, unsigned char * data, unsigned int
     crc = crc32(crc, data, length);
   }
 
-  unsigned int crc2 = swap32(crc);
-  fwrite(&crc2, 1, 4, f);
+  crc = swap32(crc);
+  fwrite(&crc, 1, 4, f);
 }
 
 void write_IDATs(FILE * f, int frame, unsigned char * data, unsigned int length, unsigned int idat_size)
@@ -287,7 +491,7 @@ void write_IDATs(FILE * f, int frame, unsigned char * data, unsigned int length,
   }
 }
 
-int get_rect(int w, int h, unsigned char *pimg1, unsigned char *pimg2, unsigned char *ptemp, int *px, int *py, int *pw, int *ph, int bpp)
+int get_rect(int w, int h, unsigned char *pimg1, unsigned char *pimg2, unsigned char *ptemp, int *px, int *py, int *pw, int *ph, int bpp, unsigned int has_tcolor, unsigned int tcolor)
 {
   int   i, j;
   int   x_min = w-1;
@@ -297,24 +501,36 @@ int get_rect(int w, int h, unsigned char *pimg1, unsigned char *pimg2, unsigned 
   int   diffnum = 0;
   int   over_is_possible = 1;
 
+  if (!has_tcolor)
+    over_is_possible = 0;
+
   if (bpp == 1)
   {
     unsigned char *pa = pimg1;
     unsigned char *pb = pimg2;
+    unsigned char *pc = ptemp;
 
     for (j=0; j<h; j++)
     for (i=0; i<w; i++)
     {
-      if (*pa++ != *pb++)
+      unsigned char c = *pb++;
+      if (*pa++ != c)
       {
         diffnum++;
+        if ((has_tcolor) && (c == tcolor)) over_is_possible = 0;
         if (i<x_min) x_min = i;
         if (i>x_max) x_max = i;
         if (j<y_min) y_min = j;
         if (j>y_max) y_max = j;
       }
+      else
+        c = tcolor;
+
+      *pc++ = c;
     }
+#ifdef FIREFOX_BUG_441971_WORKAROUND
     over_is_possible = 0;
+#endif
   }
   else
   if (bpp == 2)
@@ -348,22 +564,33 @@ int get_rect(int w, int h, unsigned char *pimg1, unsigned char *pimg2, unsigned 
   {
     unsigned char *pa = pimg1;
     unsigned char *pb = pimg2;
+    unsigned char *pc = ptemp;
 
     for (j=0; j<h; j++)
     for (i=0; i<w; i++)
     {
-      if ((pa[0] != pb[0]) || (pa[1] != pb[1]) || (pa[2] != pb[2]))
+      unsigned int c1 = (((pa[2]<<8)+pa[1])<<8)+pa[0];
+      unsigned int c2 = (((pb[2]<<8)+pb[1])<<8)+pb[0];
+      if (c1 != c2)
       {
         diffnum++;
+        if ((has_tcolor) && (c2 == tcolor)) over_is_possible = 0;
         if (i<x_min) x_min = i;
         if (i>x_max) x_max = i;
         if (j<y_min) y_min = j;
         if (j>y_max) y_max = j;
       }
+      else
+        c2 = tcolor;
+
+      memcpy(pc, &c2, 3);
       pa += 3;
       pb += 3;
+      pc += 3;
     }
+#ifdef FIREFOX_BUG_441971_WORKAROUND
     over_is_possible = 0;
+#endif
   }
   else
   if (bpp == 4)
@@ -550,30 +777,33 @@ int main(int argc, char** argv)
   char  * szOpt;
   char    szFormat[256];
   char    szNext[256];
-  int i, j;
-  int delay_num = -1;
-  int delay_den = -1;
-  int cur = 0;
-  int num = 0;
-  int first = 0;
-  int width, height, depth, type, bpp, frames;
-  int rowbytes, imagesize, idat_size, zbuf_size, zsize;
-  int palsize, trnssize;
-  int x0, y0, w0, h0, x1, y1, w1, h1, zero_trans, try_over;
-  png_color  palette[256];
-  unsigned char trns[256];
-  unsigned char * zbuf;
-  unsigned char * imagetemp;
-  unsigned char   dop, bop, c;
-
+  int     i, j, k, len;
+  int     input_ext = 0;
+  int     cur = 0;
+  int     first = 0;
+  int     width, height, depth, coltype, bpp, frames;
+  int     rowbytes, imagesize, idat_size, zbuf_size, zsize;
+  int     palsize, trnssize;
+  int     x0, y0, w0, h0, x1, y1, w1, h1, try_over;
+  short   delay_num = -1;
+  short   delay_den = -1;
+  rgb              palette[256];
+  unsigned char    trns[256];
+  unsigned char    dop, bop;
+  unsigned char  * zbuf;
+  unsigned char  * imagetemp;
+  char           * szExt;
+  unsigned char ** images;
+  unsigned int     has_tcolor, tcolor;
   FILE * f;
     
-  printf("\nAPNG Assembler 2.0\n");
+  printf("\nAPNG Assembler 2.1\n\n");
 
   if (argc <= 2)
   {
-    printf("\nUsage: apngasm.exe output.png frame001.png [1] [10] [/f]\n"
-           "\n1/10 is the default delay. Use /f to skip the first frame.\n");
+    printf("Usage: apngasm.exe output.png frame001.png [1] [10] [/f]\n"
+           "       apngasm.exe output.png frame*.png   [1] [10] [/f]\n\n"
+           "1/10 is the default delay. Use /f to skip the first frame.\n");
     return 1;
   }
 
@@ -591,7 +821,7 @@ int main(int argc, char** argv)
     }
     else
     {
-      int n = atoi(szOpt);
+      short n = atoi(szOpt);
       if ((n != 0) || (strcmp(szOpt, "0") == 0))
       {
         if (delay_num == -1) delay_num = n;
@@ -601,39 +831,81 @@ int main(int argc, char** argv)
     }
   }
 
-  if (delay_num == -1) delay_num = 1;
-  if (delay_den == -1) delay_den = 10;
+  if (delay_num <= 0) delay_num = 1;
+  if (delay_den <= 0) delay_den = 10;
 
-  char * szExt = strrchr( szImage, '.' );
-  char * szCount = szExt;
+  len = strlen(szImage);
+  szExt = szImage + len - 4;
 
-  if ((_stricmp(szExt, ".png") == 0) && (szImage<szCount))
+  if ((len>4) && (szExt[0]=='.') && (szExt[1]=='p' || szExt[1]=='P') && (szExt[2]=='n' || szExt[2]=='N') && (szExt[3]=='g' || szExt[3]=='G'))
+    input_ext = 1;
+
+  if ((len>4) && (szExt[0]=='.') && (szExt[1]=='t' || szExt[1]=='T') && (szExt[2]=='g' || szExt[2]=='G') && (szExt[3]=='a' || szExt[3]=='A'))
+    input_ext = 2;
+
+  if (input_ext == 0)
   {
-    while ((*(szCount-1) >= '0') && (*(szCount-1) <= '9'))
-    {
-      szCount--;
-      if (szImage == szCount) break;
-      if (szCount == szExt-5) break;
-    }
-    
-    strcpy(szFormat, szImage);
+    printf( "Error: '.png' or '.tga' extension expected\n" );
+    return 1;
+  }
 
-    if (szCount < szExt)
+  if (*(szExt-1) == '*')
+  {
+    f = 0;
+    for (i=1; i<6; i++)
     {
-      cur = atoi(szCount);
-      sprintf(szFormat+(szCount-szImage), "%%0%dd%s", szExt-szCount, szExt);
+      strcpy(szFormat, szImage);
+      sprintf(szFormat+len-5, "%%0%dd%s", i, szExt);
+      cur = 0;
+      sprintf(szNext, szFormat, cur);
+      if ((f = fopen(szNext, "rb")) != 0) break;
+      cur = 1;
+      sprintf(szNext, szFormat, cur);
+      if ((f = fopen(szNext, "rb")) != 0) break;
     }
+
+    if (f != 0)
+      fclose(f);
     else
-      printf( "Error: *.png sequence not found\n" );
+    {
+      printf( "Error: *%s sequence not found\n", szExt );
+      return 1;
+    }
   }
   else
-    printf( "Error: '.png' extention expected\n" );
+  {
+    for (i=1; i<6; i++)
+    {
+      if (*(szExt-i) < '0') break;
+      if (*(szExt-i) > '9') break;
+      if (szImage == szExt-i) break;
+    }
+
+    if (i == 1)
+    {
+      printf( "Error: *%s sequence not found\n", szExt );
+      return 1;
+    }
+    cur = atoi(szExt-i+1);
+    strcpy(szFormat, szImage);
+    sprintf(szFormat+len-3-i, "%%0%dd%s", i-1, szExt);
+    strcpy(szNext, szImage);
+  }
 
   frames = 0;
 
-  if ((f = fopen(szImage, "rb")) == 0)
+  for (i=0; i<256; i++)
   {
-    printf("Error: can't open the file '%s'", szImage);
+    palette[i].r = palette[i].g = palette[i].b = i;
+    trns[i] = 255;
+    stats[i].i = i;
+    stats[i].num = 0;
+    stats[i].trans = 0;
+  }
+
+  if ((f = fopen(szNext, "rb")) == 0)
+  {
+    printf("Error: can't open the file '%s'", szNext);
     return 1;
   }
 
@@ -646,7 +918,7 @@ int main(int argc, char** argv)
   } 
   while (f != 0);
 
-  unsigned char ** images = (unsigned char **)malloc(frames*sizeof(unsigned char *));
+  images = (unsigned char **)malloc(frames*sizeof(unsigned char *));
   if (images == NULL)
   {
     printf( "Error: not enough memory\n" );
@@ -655,19 +927,22 @@ int main(int argc, char** argv)
 
   for (i=0; i<frames; i++)
   {
+    int w, h, d, t, res;
+    int ps, ts;
+    rgb           pl[256];
+    unsigned char tr[256];
+
     sprintf(szNext, szFormat, cur+i);
     printf("reading %s (%d of %d)\n", szNext, i-first+1, frames-first);
         
-    int w, h, d, t, res;
-    int ps, ts;
-    png_color     pl[256];
-    unsigned char tr[256];
-
-    images[i] = LoadPNG(szNext, &w, &h, &d, &t, &pl[0], &ps, &tr[0], &ts, &res);
+    if (input_ext == 1)
+      images[i] = LoadPNG(szNext, &w, &h, &d, &t, &pl[0], &ps, &tr[0], &ts, &res);
+    else
+      images[i] = LoadTGA(szNext, &w, &h, &d, &t, &pl[0], &ps, &tr[0], &ts, &res);
 
     if (images[i] == NULL)
     {
-      printf( "Error: LoadPNG() failed\n" );
+      printf( "Error: Load%s() failed\n", (input_ext == 1) ? "PNG" : "TGA");
       return res;
     }
 
@@ -676,31 +951,46 @@ int main(int argc, char** argv)
       width = w;
       height = h;
       depth = d;
-      type = t;
+      coltype = t;
       palsize = ps;
       trnssize = ts;
       memset(trns, 255, 256);
-      if (ps) memcpy(palette, pl, ps*sizeof(png_color));
+      if (ps) memcpy(palette, pl, ps*3);
       if (ts) memcpy(trns, tr, ts);
     }
     else
     {
-      if ((width != w) || (height != h) || (depth != d) || (type != t))
+      if (width != w || height != h)
       {
-        printf( "Error: incorrect image resolution/type\n" );
+        printf( "Error: different image size\n" );
+        return 1;
+      }
+      if (depth != d || coltype != t)
+      {
+        printf( "Error: different image type\n" );
+        return 1;
+      }
+      if (palsize < ps || memcmp(palette, pl, ps*3) != 0)
+      {
+        printf( "Error: different palette\n" );
+        return 1;
+      }
+      if (trnssize != ts || memcmp(trns, tr, ts) != 0)
+      {
+        printf( "Error: different trns chnnk\n" );
         return 1;
       }
     }
   }
     
   bpp = 1;
-  if (type == 2)
+  if (coltype == 2)
     bpp = 3;
   else
-  if (type == 4)
+  if (coltype == 4)
     bpp = 2;
   else
-  if (type == 6)
+  if (coltype == 6)
     bpp = 4;
 
   rowbytes  = width * bpp;
@@ -708,60 +998,102 @@ int main(int argc, char** argv)
   idat_size = (rowbytes + 1) * height;
   zbuf_size = idat_size + ((idat_size + 7) >> 3) + ((idat_size + 63) >> 6) + 11;
 
-  zero_trans = 0;
+  /* Optimizations  - start */
+  has_tcolor = 0;
+  tcolor = 0;
 
-  if (type == 3)
+  if (coltype == 0)
   {
-    int tcolor = 0;
-
-    for (j=0; j<256; j++)
-    if (trns[j] == 0)
+    if (trnssize)
     {
-      tcolor = j;
-      zero_trans = 1;
-      break;
-    }
-
-    if (zero_trans && tcolor)
-    {
-      c = palette[tcolor].red;   palette[tcolor].red   = palette[0].red;   palette[0].red   = c;
-      c = palette[tcolor].green; palette[tcolor].green = palette[0].green; palette[0].green = c;
-      c = palette[tcolor].blue;  palette[tcolor].blue  = palette[0].blue;  palette[0].blue  = c;
-      trns[tcolor] = trns[0]; trns[0] = 0;
-
-      for (i=0; i<frames; i++)
-        for (j=0; j<imagesize; j++)
-        {
-          if (*(images[i]+j) == tcolor) 
-            *(images[i]+j) = 0;
-          else
-          if (*(images[i]+j) == 0) 
-            *(images[i]+j) = tcolor;
-        }
-
-      if (trnssize)
-        while (trnssize > 0 && trns[trnssize-1] == 255)
-          trnssize--;
+      has_tcolor = 1;
+      tcolor = trns[1];
     }
   }
   else
-  if (type == 4)
+  if (coltype == 2)
   {
-    zero_trans = 1;
+    if (trnssize)
+    {
+      has_tcolor = 1;
+      tcolor = (((trns[5]<<8)+trns[3])<<8)+trns[1];
+    }
+  }
+  else
+  if (coltype == 3)
+  {
+    rgb           pl[256];
+    unsigned char tr[256];
+    unsigned int  sh[256];
+
+    for (i=0; i<trnssize; i++)
+    if (trns[i] == 0)
+    {
+      stats[i].trans = 1;
+      has_tcolor = 1;
+      break;
+    }
+
+    for (i=0; i<frames; i++)
+      for (j=0; j<imagesize; j++)
+        stats[images[i][j]].num++;
+
+    if (!has_tcolor)
+    for (i=0; i<256; i++)
+    if (stats[i].num == 0)
+    {
+      trns[i] = 0;
+      stats[i].trans = 1;
+      has_tcolor = 1;
+      break;
+    }
+
+    // sort the palette, by color usage
+    qsort( &stats[0], 256, sizeof(STATS), cmp_stats);
+
+    palsize = trnssize = 0;
+    for (i=0; i<256; i++)
+    {
+      pl[i].r = palette[stats[i].i].r;
+      pl[i].g = palette[stats[i].i].g;
+      pl[i].b = palette[stats[i].i].b;
+      tr[i] = trns[stats[i].i];
+
+      if (stats[i].num != 0)
+        palsize = i+1;
+
+      if ((tr[i] != 255) && (stats[i].num != 0 || i==0))
+        trnssize = i+1;
+      
+      sh[stats[i].i] = i;
+    }
+
+    if (palsize) memcpy(palette, pl, palsize*3);
+    if (trnssize) memcpy(trns, tr, trnssize);
+
+    for (i=0; i<frames; i++)
+      for (j=0; j<imagesize; j++)
+        images[i][j] = sh[images[i][j]];
+  }
+  else
+  if (coltype == 4)
+  {
+    has_tcolor = 1;
     for (i=0; i<frames; i++)
       for (j=0; j<width*height; j++)
         if (*(images[i]+j*2+1) == 0) 
           *(images[i]+j*2) = 0;
   }
   else
-  if (type == 6)
+  if (coltype == 6)
   {
-    zero_trans = 1;
+    has_tcolor = 1;
     for (i=0; i<frames; i++)
       for (j=0; j<width*height; j++)
         if (*(images[i]+j*4+3) == 0) 
           *(images[i]+j*4) = *(images[i]+j*4+1) = *(images[i]+j*4+2) = 0;
   }
+  /* Optimizations  - end */
 
   for (i=0; i<12; i++)
   {
@@ -816,13 +1148,13 @@ int main(int argc, char** argv)
       unsigned char   mCompression;
       unsigned char   mFilterMethod;
       unsigned char   mInterlaceMethod;
-    } ihdr;
+    } ihdr = { swap32(width), swap32(height), depth, coltype, 0, 0, 0 };
 
     struct acTL 
     {
       unsigned int    mFrameCount;
       unsigned int    mLoopCount;
-    } actl;
+    } actl = { swap32(frames-first), 0 };
 
     struct fcTL 
     {
@@ -839,26 +1171,15 @@ int main(int argc, char** argv)
 
     fwrite(png_sign, 1, 8, f);
 
-    ihdr.mWidth            = swap32(width);
-    ihdr.mHeight           = swap32(height);
-    ihdr.mDepth            = depth;
-    ihdr.mColorType        = type;
-    ihdr.mCompression      = 0;
-    ihdr.mFilterMethod     = 0;
-    ihdr.mInterlaceMethod  = 0;
     write_chunk(f, "IHDR", (unsigned char *)(&ihdr), 13);
 
     if (frames > 1)
-    {
-      actl.mFrameCount  = swap32(frames-first);
-      actl.mLoopCount   = 0;
       write_chunk(f, "acTL", (unsigned char *)(&actl), 8);
-    }
     else
       first = 0;
 
     if (palsize > 0)
-      write_chunk(f, "PLTE", (unsigned char *)(&palette), palsize*sizeof(png_color));
+      write_chunk(f, "PLTE", (unsigned char *)(&palette), palsize*3);
 
     if (trnssize > 0)
       write_chunk(f, "tRNS", trns, trnssize);
@@ -914,25 +1235,36 @@ int main(int argc, char** argv)
 
     for (i=first; i<frames-1; i++)
     {
+      unsigned int op_min;
+      int          op_best;
+
       printf("saving frame %d of %d\n", i-first+2, frames-first);
       for (j=0; j<12; j++)
         op[j].valid = 0;
 
       /* dispose = none */
-      try_over = get_rect(width, height, images[i], images[i+1], imagetemp, &x1, &y1, &w1, &h1, bpp);
+      try_over = get_rect(width, height, images[i], images[i+1], imagetemp, &x1, &y1, &w1, &h1, bpp, has_tcolor, tcolor);
       deflate_rect(images[i+1], x1, y1, w1, h1, bpp, rowbytes, zbuf_size, 0);
       if (try_over)
         deflate_rect(imagetemp, x1, y1, w1, h1, bpp, rowbytes, zbuf_size, 1);
 
       /* dispose = background */
-      if (zero_trans)
+      if (has_tcolor)
       {
         memcpy(imagetemp, images[i], imagesize);
-        for (j=0; j<h0; j++)
-          memset(imagetemp + ((j+y0)*width + x0)*bpp, 0, w0*bpp);
+        if (coltype == 2)
+          for (j=0; j<h0; j++)
+            for (k=0; k<w0; k++)
+              memcpy(imagetemp + ((j+y0)*width + (k+x0))*3, &tcolor, 3);
+        else
+          for (j=0; j<h0; j++)
+            memset(imagetemp + ((j+y0)*width + x0)*bpp, tcolor, w0*bpp);
 
-        try_over = get_rect(width, height, imagetemp, images[i+1], imagetemp, &x1, &y1, &w1, &h1, bpp);
+        try_over = get_rect(width, height, imagetemp, images[i+1], imagetemp, &x1, &y1, &w1, &h1, bpp, has_tcolor, tcolor);
 
+#ifdef FIREFOX_BUG_546272_WORKAROUND
+        if (i == first) { w1 += x1; h1 += y1; x1 = y1 = 0; }
+#endif
         deflate_rect(images[i+1], x1, y1, w1, h1, bpp, rowbytes, zbuf_size, 2);
         if (try_over)
           deflate_rect(imagetemp, x1, y1, w1, h1, bpp, rowbytes, zbuf_size, 3);
@@ -941,14 +1273,14 @@ int main(int argc, char** argv)
       if (i>first)
       {
         /* dispose = previous */
-        try_over = get_rect(width, height, images[i-1], images[i+1], imagetemp, &x1, &y1, &w1, &h1, bpp);
+        try_over = get_rect(width, height, images[i-1], images[i+1], imagetemp, &x1, &y1, &w1, &h1, bpp, has_tcolor, tcolor);
         deflate_rect(images[i+1], x1, y1, w1, h1, bpp, rowbytes, zbuf_size, 4);
         if (try_over)
           deflate_rect(imagetemp, x1, y1, w1, h1, bpp, rowbytes, zbuf_size, 5);
       }
 
-      unsigned int op_min = op[0].zstream.total_out;
-      int op_best = 0;
+      op_min = op[0].zstream.total_out;
+      op_best = 0;
       for (j=1; j<12; j++)
       {
         if (op[j].valid)
@@ -976,10 +1308,16 @@ int main(int argc, char** argv)
 
       write_IDATs(f, i, zbuf, zsize, idat_size);
 
+      /* process apng dispose - begin */
       if (dop == 1)
       {
-        for (j=0; j<h0; j++)
-          memset(images[i] + ((j+y0)*width + x0)*bpp, 0, w0*bpp);
+        if (coltype == 2)
+          for (j=0; j<h0; j++)
+            for (k=0; k<w0; k++)
+              memcpy(images[i] + ((j+y0)*width + (k+x0))*3, &tcolor, 3);
+        else
+          for (j=0; j<h0; j++)
+            memset(images[i] + ((j+y0)*width + x0)*bpp, tcolor, w0*bpp);
       }
       else
       if (dop == 2)
@@ -987,6 +1325,7 @@ int main(int argc, char** argv)
         for (j=0; j<h0; j++)
           memcpy(images[i] + ((j+y0)*width + x0)*bpp, images[i-1] + ((j+y0)*width + x0)*bpp, w0*bpp);
       }
+      /* process apng dispose - end */
 
       x0 = op[op_best].x;
       y0 = op[op_best].y;

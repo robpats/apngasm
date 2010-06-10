@@ -1,12 +1,20 @@
-APNG Assembler 2.0
+APNG Assembler 2.1
 
 by Max Stepin 
 maxst@users.sourceforge.net
 ---------------------------
-Creates APNG animation from PNG image sequence.
+Creates APNG animation from PNG/TGA image sequence.
 
 Usage: 
 apngasm.exe output.png frame000.png [1] [10] [/f]
+apngasm.exe output.png frame*.png   [1] [10] [/f]
 
 1/10 is the default delay. Use /f to skip the first frame.
+---------------------------
 
+Changes in version 2.1:
+
+1. Added support for TGA sequences as input.
+
+2. Added support for new command line format:
+   apngasm.exe output.png frame*.png   [1] [10] [/f]
