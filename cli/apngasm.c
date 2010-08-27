@@ -1,4 +1,4 @@
-/* APNG Assembler 2.1
+/* APNG Assembler 2.2
  *
  * Copyright (c) 2009,2010 Max Stepin
  * maxst at users.sourceforge.net
@@ -21,7 +21,6 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
  */
-#define FIREFOX_BUG_441971_WORKAROUND
 #define FIREFOX_BUG_546272_WORKAROUND
 
 #define PNG_ZBUF_SIZE  32768
@@ -68,7 +67,7 @@ unsigned char * paeth_row;
 unsigned char png_sign[8] = {137,  80,  78,  71,  13,  10,  26,  10};
 unsigned char png_Software[27] = { 83, 111, 102, 116, 119, 97, 114, 101, '\0', 
                                    65,  80,  78,  71,  32, 65, 115, 115, 101, 
-                                  109,  98, 108, 101, 114, 32,  50,  46,  49};
+                                  109,  98, 108, 101, 114, 32,  50,  46,  50};
 
 int cmp_stats( const void *arg1, const void *arg2 )
 {
@@ -528,9 +527,6 @@ int get_rect(int w, int h, unsigned char *pimg1, unsigned char *pimg2, unsigned 
 
       *pc++ = c;
     }
-#ifdef FIREFOX_BUG_441971_WORKAROUND
-    over_is_possible = 0;
-#endif
   }
   else
   if (bpp == 2)
@@ -588,9 +584,6 @@ int get_rect(int w, int h, unsigned char *pimg1, unsigned char *pimg2, unsigned 
       pb += 3;
       pc += 3;
     }
-#ifdef FIREFOX_BUG_441971_WORKAROUND
-    over_is_possible = 0;
-#endif
   }
   else
   if (bpp == 4)
@@ -781,6 +774,7 @@ int main(int argc, char** argv)
   int     input_ext = 0;
   int     cur = 0;
   int     first = 0;
+  int     loops = 0;
   int     width, height, depth, coltype, bpp, frames;
   int     rowbytes, imagesize, idat_size, zbuf_size, zsize;
   int     palsize, trnssize;
@@ -797,13 +791,16 @@ int main(int argc, char** argv)
   unsigned int     has_tcolor, tcolor;
   FILE * f;
     
-  printf("\nAPNG Assembler 2.1\n\n");
+  printf("\nAPNG Assembler 2.2\n\n");
 
   if (argc <= 2)
   {
-    printf("Usage: apngasm.exe output.png frame001.png [1] [10] [/f]\n"
-           "       apngasm.exe output.png frame*.png   [1] [10] [/f]\n\n"
-           "1/10 is the default delay. Use /f to skip the first frame.\n");
+    printf("Usage: apngasm output.png frame001.png [1] [10] [/l0] [/f]\n"
+           "       apngasm output.png frame*.png   [1] [10] [/l0] [/f]\n\n"
+           "1 10 : frame delay is 1/10 sec. (default)\n"
+           "/l0  : loop forever (default)\n"
+           "/l2  : only 2 loops\n"
+           "/f   : skip the first frame\n");
     return 1;
   }
 
@@ -818,6 +815,9 @@ int main(int argc, char** argv)
     {
       if ((szOpt[1] == 'f') || (szOpt[1] == 'F'))
         first = 1;
+      else
+      if ((szOpt[1] == 'l') || (szOpt[1] == 'L'))
+        loops = atoi(szOpt+2);
     }
     else
     {
@@ -1154,7 +1154,7 @@ int main(int argc, char** argv)
     {
       unsigned int    mFrameCount;
       unsigned int    mLoopCount;
-    } actl = { swap32(frames-first), 0 };
+    } actl = { swap32(frames-first), swap32(loops) };
 
     struct fcTL 
     {

@@ -1,4 +1,4 @@
-APNG Assembler 2.1
+APNG Assembler 2.2
 
 by Max Stepin 
 maxst@users.sourceforge.net
@@ -6,15 +6,19 @@ maxst@users.sourceforge.net
 Creates APNG animation from PNG/TGA image sequence.
 
 Usage: 
-apngasm.exe output.png frame000.png [1] [10] [/f]
-apngasm.exe output.png frame*.png   [1] [10] [/f]
+apngasm output.png frame001.png [1] [10] [/l0] [/f]
+apngasm output.png frame*.png   [1] [10] [/l0] [/f]
 
-1/10 is the default delay. Use /f to skip the first frame.
+1 10 : frame delay is 1/10 sec. (default)
+/l0  : loop forever (default)
+/l2  : only 2 loops
+/f   : skip the first frame
+
 ---------------------------
 
-Changes in version 2.1:
+Changes in version 2.2:
 
-1. Added support for TGA sequences as input.
+1. Turned on transparency (blend=over) optimization for indexed mode
+   (works fine with Firefox 3.6.7 and later)
 
-2. Added support for new command line format:
-   apngasm.exe output.png frame*.png   [1] [10] [/f]
+2. Added loop control switch: /l
