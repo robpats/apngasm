@@ -1,30 +1,32 @@
-/* APNG Assembler 2.3
+/* APNG Assembler 2.4
  *
- * Copyright (c) 2009,2010 Max Stepin
+ * This program creates APNG animation from PNG/TGA image sequence.
+ *
+ * http://apngasm.sourceforge.net/
+ *
+ * Copyright (c) 2009-2011 Max Stepin
  * maxst at users.sourceforge.net
  *
- * GNU LGPL information
- * --------------------
+ * zlib license
+ * ------------
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
+ * This software is provided 'as-is', without any express or implied
+ * warranty.  In no event will the authors be held liable for any damages
+ * arising from the use of this software.
  *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
+ * Permission is granted to anyone to use this software for any purpose,
+ * including commercial applications, and to alter it and redistribute it
+ * freely, subject to the following restrictions:
  *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * 1. The origin of this software must not be misrepresented; you must not
+ *    claim that you wrote the original software. If you use this software
+ *    in a product, an acknowledgment in the product documentation would be
+ *    appreciated but is not required.
+ * 2. Altered source versions must be plainly marked as such, and must not be
+ *    misrepresented as being the original software.
+ * 3. This notice may not be removed or altered from any source distribution.
  *
  */
-#define FIREFOX_BUG_546272_WORKAROUND
-
-#define PNG_ZBUF_SIZE  32768
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -52,50 +54,47 @@ unsigned int swap32(unsigned int data) {return((data & 0xFF) << 24) | ((data & 0
 #endif
 
 typedef struct { z_stream zstream; unsigned char * zbuf; int x, y, w, h, valid; } OP;
-typedef struct { unsigned int i, num, trans; } STATS;
-typedef struct rgb_struct { unsigned char r, g, b; } rgb;
+typedef struct { unsigned int num; unsigned char r, g, b, a; } COLORS;
+typedef struct { unsigned char r, g, b; } rgb;
+typedef struct { unsigned char * p; int w, h, t, ps, ts; rgb pl[256]; unsigned char tr[256]; unsigned short num, den; } image_info;
 
-OP    op[12];
-STATS stats[256];
+OP      op[12];
+COLORS  col[256];
 
-unsigned int next_seq_num = 0;
+unsigned int    next_seq_num = 0;
 unsigned char * row_buf;
 unsigned char * sub_row;
 unsigned char * up_row;
 unsigned char * avg_row;
 unsigned char * paeth_row;
-unsigned char png_sign[8] = {137,  80,  78,  71,  13,  10,  26,  10};
-unsigned char png_Software[27] = { 83, 111, 102, 116, 119, 97, 114, 101, '\0', 
-                                   65,  80,  78,  71,  32, 65, 115, 115, 101, 
-                                  109,  98, 108, 101, 114, 32,  50,  46,  51};
+unsigned char   png_sign[8] = {137,  80,  78,  71,  13,  10,  26,  10};
+unsigned char   png_Software[27] = { 83, 111, 102, 116, 119, 97, 114, 101, '\0', 
+                                     65,  80,  78,  71,  32, 65, 115, 115, 101, 
+                                    109,  98, 108, 101, 114, 32,  50,  46,  52};
 
-int cmp_stats( const void *arg1, const void *arg2 )
+int cmp_colors( const void *arg1, const void *arg2 )
 {
-  if ( ((STATS*)arg2)->trans == ((STATS*)arg1)->trans )
-    return ((STATS*)arg2)->num - ((STATS*)arg1)->num;
+  if ( ((COLORS*)arg2)->a == ((COLORS*)arg1)->a )
+    return (int)(((COLORS*)arg2)->num) - (int)(((COLORS*)arg1)->num);
   else
-    return ((STATS*)arg2)->trans - ((STATS*)arg1)->trans;
+    return (int)(((COLORS*)arg1)->a) - (int)(((COLORS*)arg2)->a);
 }
 
-unsigned char * LoadPNG(char * szImage, int *pWidth, int *pHeight, int *pDepth, int *pType, rgb *pPal, int *pPsize, unsigned char *pTrns, int *pTsize, int *pRes)
+int LoadPNG(char * szImage, image_info * pImgInfo)
 {
-  FILE          * f;
-  unsigned char * image_data = NULL;
-
-  *pRes = 0;
+  FILE * f;
+  int res = 0;
 
   if ((f = fopen(szImage, "rb")) != 0)
   {
     png_structp     png_ptr;
     png_infop       info_ptr;
-    png_bytepp      row_pointers = NULL;
+    png_bytepp      row_ptr = NULL;
     png_uint_32     width, height, i, rowbytes;
-    int             depth, coltype;
+    int             depth, coltype, itype, passes;
     unsigned char   sig[8];
 
-    if (fread(sig, 1, 8, f) != 8) return NULL;
-
-    if (png_sig_cmp(sig, 0, 8) == 0)
+    if (fread(sig, 1, 8, f) == 8 && png_sig_cmp(sig, 0, 8) == 0)
     {
       png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
 
@@ -110,37 +109,36 @@ unsigned char * LoadPNG(char * szImage, int *pWidth, int *pHeight, int *pDepth, 
             png_init_io(png_ptr, f);
             png_set_sig_bytes(png_ptr, 8);
             png_read_info(png_ptr, info_ptr);
-            png_get_IHDR(png_ptr, info_ptr, &width, &height, &depth, &coltype, NULL, NULL, NULL);
-            *pWidth  = width;
-            *pHeight = height;
-            *pDepth  = depth;
-            *pType   = coltype;
+            png_get_IHDR(png_ptr, info_ptr, &width, &height, &depth, &coltype, &itype, NULL, NULL);
+            pImgInfo->w = width;
+            pImgInfo->h = height;
+            pImgInfo->t = coltype;
 
             if (png_get_valid(png_ptr, info_ptr, PNG_INFO_PLTE))
             {
               png_colorp     palette;
 
-              png_get_PLTE(png_ptr, info_ptr, &palette, pPsize);
-              memcpy(pPal, palette, *pPsize * 3);
+              png_get_PLTE(png_ptr, info_ptr, &palette, &pImgInfo->ps);
+              memcpy(pImgInfo->pl, palette, pImgInfo->ps * 3);
             }
             else
-              *pPsize = 0;
+              pImgInfo->ps = 0;
 
             if (png_get_valid(png_ptr, info_ptr, PNG_INFO_tRNS))
             {
               png_color_16p  trans_color;
               png_bytep      trans_alpha;
 
-              png_get_tRNS(png_ptr, info_ptr, &trans_alpha, pTsize, &trans_color);
+              png_get_tRNS(png_ptr, info_ptr, &trans_alpha, &pImgInfo->ts, &trans_color);
 
               if (coltype == PNG_COLOR_TYPE_GRAY)
               {
                 if (depth == 16)
                   trans_color->gray >>= 8;
 
-                pTrns[0] = 0;
-                pTrns[1] = trans_color->gray & 0xFF;
-                *pTsize = 2;
+                pImgInfo->tr[0] = 0;
+                pImgInfo->tr[1] = trans_color->gray & 0xFF;
+                pImgInfo->ts = 2;
               }
               else
               if (coltype == PNG_COLOR_TYPE_RGB)
@@ -151,19 +149,19 @@ unsigned char * LoadPNG(char * szImage, int *pWidth, int *pHeight, int *pDepth, 
                   trans_color->green >>= 8;
                   trans_color->blue >>= 8;
                 }
-                pTrns[0] = 0;
-                pTrns[1] = trans_color->red & 0xFF;
-                pTrns[2] = 0;
-                pTrns[3] = trans_color->green & 0xFF;
-                pTrns[4] = 0;
-                pTrns[5] = trans_color->blue & 0xFF;
-                *pTsize = 6;
+                pImgInfo->tr[0] = 0;
+                pImgInfo->tr[1] = trans_color->red & 0xFF;
+                pImgInfo->tr[2] = 0;
+                pImgInfo->tr[3] = trans_color->green & 0xFF;
+                pImgInfo->tr[4] = 0;
+                pImgInfo->tr[5] = trans_color->blue & 0xFF;
+                pImgInfo->ts = 6;
               }
               else
-                memcpy(pTrns, trans_alpha, *pTsize);
+                memcpy(pImgInfo->tr, trans_alpha, pImgInfo->ts);
             }
             else
-              *pTsize = 0;
+              pImgInfo->ts = 0;
 
             if (depth > 8)
               png_set_strip_16(png_ptr);
@@ -176,68 +174,76 @@ unsigned char * LoadPNG(char * szImage, int *pWidth, int *pHeight, int *pDepth, 
                 png_set_packing(png_ptr);
             }
 
+            if (itype == PNG_INTERLACE_ADAM7)
+              passes = png_set_interlace_handling(png_ptr);
+
             png_read_update_info(png_ptr, info_ptr);
-            *pDepth  = png_get_bit_depth(png_ptr, info_ptr);
 
-            rowbytes = png_get_rowbytes(png_ptr, info_ptr);
-
-            if ((image_data = (unsigned char *)malloc(rowbytes*height)) != NULL) 
+            if (png_get_bit_depth(png_ptr, info_ptr) == 8)
             {
-              if ((row_pointers = (png_bytepp)malloc(height*sizeof(png_bytep))) != NULL) 
-              {
-                for (i=0; i<height; i++)
-                  row_pointers[i] = image_data + i*rowbytes;
+              rowbytes = png_get_rowbytes(png_ptr, info_ptr);
 
-                png_read_image(png_ptr, row_pointers);
-                free(row_pointers);
-                png_read_end(png_ptr, NULL);
-                png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
+              if ((pImgInfo->p = (unsigned char *)malloc(rowbytes*height)) != NULL)
+              {
+                if ((row_ptr = (png_bytepp)malloc(height*sizeof(png_bytep))) != NULL)
+                {
+                  for (i=0; i<height; i++)
+                    row_ptr[i] = pImgInfo->p + i*rowbytes;
+
+                  png_read_image(png_ptr, row_ptr);
+                  free(row_ptr);
+                  png_read_end(png_ptr, NULL);
+                  png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
+                }
+                else
+                {
+                  png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
+                  free(pImgInfo->p);
+                  res = 8;
+                }
               }
               else
               {
                 png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
-                free(image_data);
-                *pRes = 7;
+                res = 7;
               }
             }
             else
             {
               png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
-              *pRes = 6;
+              res = 6;
             }
           }
           else
           {
             png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
-            *pRes = 5;
+            res = 5;
           }
         }
         else
         {
           png_destroy_read_struct(&png_ptr, NULL, NULL);
-          *pRes = 4;
+          res = 4;
         }
       }
       else
-        *pRes = 3;
+        res = 3;
     }
     else
-      *pRes = 2;
+      res = 2;
 
     fclose(f);
   }
   else
-    *pRes = 1;
+    res = 1;
 
-  return image_data;
+  return res;
 }
 
-unsigned char * LoadTGA(char * szImage, int *pWidth, int *pHeight, int *pDepth, int *pType, rgb *pPal, int *pPsize, unsigned char *pTrns, int *pTsize, int *pRes)
+int LoadTGA(char * szImage, image_info * pImgInfo)
 {
-  FILE          * f;
-  unsigned char * image_data = NULL;
-
-  *pRes = 0;
+  FILE * f;
+  int res = 0;
 
   if ((f = fopen(szImage, "rb")) != 0)
   {
@@ -246,41 +252,40 @@ unsigned char * LoadTGA(char * szImage, int *pWidth, int *pHeight, int *pDepth, 
     unsigned char c;
     unsigned char col[4];
     unsigned char fh[18];
-    unsigned char * pRow;
+    unsigned char * row_ptr;
 
-    if (fread(&fh, 1, 18, f) != 18) return NULL;
+    if (fread(&fh, 1, 18, f) != 18) return 2;
 
-    *pWidth  = fh[12] + fh[13]*256;
-    *pHeight = fh[14] + fh[15]*256;
-    *pDepth  = 8;
-    *pType   = -1;
-    *pPsize  = 0;
-    *pTsize  = 0;
+    pImgInfo->w = fh[12] + fh[13]*256;
+    pImgInfo->h = fh[14] + fh[15]*256;
+    pImgInfo->t = -1;
+    pImgInfo->ps = 0;
+    pImgInfo->ts = 0;
 
-    rowbytes = *pWidth;
+    rowbytes = pImgInfo->w;
     if ((fh[2] & 7) == 3)
-      *pType = 0;
+      pImgInfo->t = 0;
     else
     if (((fh[2] & 7) == 2) && (fh[16] == 24))
     {
-      *pType = 2;
-      rowbytes = *pWidth * 3;
+      pImgInfo->t = 2;
+      rowbytes = pImgInfo->w * 3;
     }
     else
     if (((fh[2] & 7) == 2) && (fh[16] == 32))
     {
-      *pType = 6;
-      rowbytes = *pWidth * 4;
+      pImgInfo->t = 6;
+      rowbytes = pImgInfo->w * 4;
     }
     else
     if (((fh[2] & 7) == 1) && (fh[1] == 1) && (fh[7] == 24))
-      *pType = 3;
+      pImgInfo->t = 3;
 
     compr = fh[2] & 8;
 
-    if (*pType >= 0)
+    if (pImgInfo->t >= 0)
     {
-      if ((image_data = (unsigned char *)malloc(*pHeight * rowbytes)) != NULL)
+      if ((pImgInfo->p = (unsigned char *)malloc(pImgInfo->h * rowbytes)) != NULL)
       {
         if (fh[0] != 0)
           fseek( f, fh[0], SEEK_CUR );
@@ -292,137 +297,137 @@ unsigned char * LoadTGA(char * szImage, int *pWidth, int *pHeight, int *pDepth, 
 
           for (i=start; i<start+size && i<256; i++)
           {
-            if (fread(&col, 1, 3, f) != 3) return NULL;
-            pPal[i].r = col[2];
-            pPal[i].g = col[1];
-            pPal[i].b = col[0];
+            if (fread(&col, 1, 3, f) != 3) return 5;
+            pImgInfo->pl[i].r = col[2];
+            pImgInfo->pl[i].g = col[1];
+            pImgInfo->pl[i].b = col[0];
           }
-          *pPsize = i;
+          pImgInfo->ps = i;
 
           if (start+size > 256)
-            fseek( f, (start+size-256)*3, SEEK_CUR );
+            fseek(f, (start+size-256)*3, SEEK_CUR);
         }
 
         if ((fh[17] & 0x20) == 0)
-          pRow = image_data+(*pHeight-1)*rowbytes;
+          row_ptr = pImgInfo->p+(pImgInfo->h-1)*rowbytes;
         else
-          pRow = image_data;
+          row_ptr = pImgInfo->p;
 
-        for (j=0; j<*pHeight; j++)
+        for (j=0; j<pImgInfo->h; j++)
         {
           if (compr == 0)
           {
-            if (*pType == 6)
+            if (pImgInfo->t == 6)
             {
-              for (i=0; i<*pWidth; i++)
+              for (i=0; i<pImgInfo->w; i++)
               {
-                if (fread(&col, 1, 4, f) != 4) return NULL;
-                pRow[i*4]   = col[2];
-                pRow[i*4+1] = col[1];
-                pRow[i*4+2] = col[0];
-                pRow[i*4+3] = col[3];
+                if (fread(&col, 1, 4, f) != 4) return 5;
+                row_ptr[i*4]   = col[2];
+                row_ptr[i*4+1] = col[1];
+                row_ptr[i*4+2] = col[0];
+                row_ptr[i*4+3] = col[3];
               }
             }
             else
-            if (*pType == 2)
+            if (pImgInfo->t == 2)
             {
-              for (i=0; i<*pWidth; i++)
+              for (i=0; i<pImgInfo->w; i++)
               {
-                if (fread(&col, 1, 3, f) != 3) return NULL;
-                pRow[i*3]   = col[2];
-                pRow[i*3+1] = col[1];
-                pRow[i*3+2] = col[0];
+                if (fread(&col, 1, 3, f) != 3) return 5;
+                row_ptr[i*3]   = col[2];
+                row_ptr[i*3+1] = col[1];
+                row_ptr[i*3+2] = col[0];
               }
             }
             else
-              if (fread(pRow, 1, rowbytes, f) != rowbytes) return NULL;
+              if (fread(row_ptr, 1, rowbytes, f) != rowbytes) return 5;
           }
           else
           {
             i = 0;
-            while (i<*pWidth)
+            while (i<pImgInfo->w)
             {
-              if (fread(&c, 1, 1, f) != 1) return NULL;
+              if (fread(&c, 1, 1, f) != 1) return 5;
               n = (c & 0x7F)+1;
 
               if ((c & 0x80) != 0)
               {
-                if (*pType == 6)
+                if (pImgInfo->t == 6)
                 {
-                  if (fread(&col, 1, 4, f) != 4) return NULL;
+                  if (fread(&col, 1, 4, f) != 4) return 5;
                   for (k=0; k<n; k++)
                   {
-                    pRow[(i+k)*4]   = col[2];
-                    pRow[(i+k)*4+1] = col[1];
-                    pRow[(i+k)*4+2] = col[0];
-                    pRow[(i+k)*4+3] = col[3];
+                    row_ptr[(i+k)*4]   = col[2];
+                    row_ptr[(i+k)*4+1] = col[1];
+                    row_ptr[(i+k)*4+2] = col[0];
+                    row_ptr[(i+k)*4+3] = col[3];
                   }
                 }
                 else
-                if (*pType == 2)
+                if (pImgInfo->t == 2)
                 {
-                  if (fread(&col, 1, 3, f) != 3) return NULL;
+                  if (fread(&col, 1, 3, f) != 3) return 5;
                   for (k=0; k<n; k++)
                   {
-                    pRow[(i+k)*3]   = col[2];
-                    pRow[(i+k)*3+1] = col[1];
-                    pRow[(i+k)*3+2] = col[0];
+                    row_ptr[(i+k)*3]   = col[2];
+                    row_ptr[(i+k)*3+1] = col[1];
+                    row_ptr[(i+k)*3+2] = col[0];
                   }
                 }
                 else
                 {
-                  if (fread(&col, 1, 1, f) != 1) return NULL;
-                  memset(pRow+i, col[0], n);
+                  if (fread(&col, 1, 1, f) != 1) return 5;
+                  memset(row_ptr+i, col[0], n);
                 }
               }
               else
               {
-                if (*pType == 6)
+                if (pImgInfo->t == 6)
                 {
                   for (k=0; k<n; k++)
                   {
-                    if (fread(&col, 1, 4, f) != 4) return NULL;
-                    pRow[(i+k)*4]   = col[2];
-                    pRow[(i+k)*4+1] = col[1];
-                    pRow[(i+k)*4+2] = col[0];
-                    pRow[(i+k)*4+3] = col[3];
+                    if (fread(&col, 1, 4, f) != 4) return 5;
+                    row_ptr[(i+k)*4]   = col[2];
+                    row_ptr[(i+k)*4+1] = col[1];
+                    row_ptr[(i+k)*4+2] = col[0];
+                    row_ptr[(i+k)*4+3] = col[3];
                   }
                 }
                 else
-                if (*pType == 2)
+                if (pImgInfo->t == 2)
                 {
                   for (k=0; k<n; k++)
                   {
-                    if (fread(&col, 1, 3, f) != 3) return NULL;
-                    pRow[(i+k)*3]   = col[2];
-                    pRow[(i+k)*3+1] = col[1];
-                    pRow[(i+k)*3+2] = col[0];
+                    if (fread(&col, 1, 3, f) != 3) return 5;
+                    row_ptr[(i+k)*3]   = col[2];
+                    row_ptr[(i+k)*3+1] = col[1];
+                    row_ptr[(i+k)*3+2] = col[0];
                   }
                 }
                 else
-                  if (fread(pRow+i, 1, n, f) != n) return NULL;
+                  if (fread(row_ptr+i, 1, n, f) != n) return 5;
               }
               i+=n;
             }
           }
           if ((fh[17] & 0x20) == 0)
-            pRow -= rowbytes;
+            row_ptr -= rowbytes;
           else
-            pRow += rowbytes;
+            row_ptr += rowbytes;
         }
       }
       else
-        *pRes = 3;
+        res = 4;
     }
     else
-      *pRes = 2;
+      res = 3;
 
     fclose(f);
   }
   else
-    *pRes = 1;
+    res = 1;
 
-  return image_data;
+  return res;
 }
 
 void write_chunk(FILE * f, const char * name, unsigned char * data, unsigned int length)
@@ -479,8 +484,8 @@ void write_IDATs(FILE * f, int frame, unsigned char * data, unsigned int length,
   while (length > 0)
   {
     unsigned int ds = length;
-    if (ds > PNG_ZBUF_SIZE)
-      ds = PNG_ZBUF_SIZE;
+    if (ds > 32768)
+      ds = 32768;
 
     if (frame == 0)
       write_chunk(f, "IDAT", data, ds);
@@ -772,14 +777,13 @@ int main(int argc, char** argv)
   char  * szOpt;
   char    szFormat[256];
   char    szNext[256];
-  int     i, j, k, len, n, c;
+  int     i, j, k, len;
   int     bpp, rowbytes, imagesize, idat_size, zbuf_size, zsize;
   int     x0, y0, w0, h0, x1, y1, w1, h1, try_over;
   int     has_tcolor, tcolor;
   int     input_ext = 0;
   int     width = 0;
   int     height = 0;
-  int     depth = 0;
   int     coltype = 0;
   int     cur = 0;
   int     first = 0;
@@ -791,20 +795,21 @@ int main(int argc, char** argv)
   int     keep_coltype = 0;
   short   delay_num = -1;
   short   delay_den = -1;
+  image_info     * img;
   rgb              palette[256];
   unsigned char    trns[256];
-  unsigned char    bits[256];
-  unsigned char    dop, bop, r, g, b;
+  unsigned char    cube[4096];
+  unsigned char    gray[256];
+  unsigned char    dop, bop, r, g, b, a;
   unsigned char  * zbuf;
-  unsigned char  * imagetemp;
+  unsigned char  * img_temp;
   char           * szExt;
-  unsigned char ** images;
-  unsigned char  * bigcube;
+  unsigned char  * dst;
   unsigned char  * sp;
   unsigned char  * dp;
   FILE * f;
 
-  printf("\nAPNG Assembler 2.3\n\n");
+  printf("\nAPNG Assembler 2.4\n\n");
 
   if (argc <= 2)
   {
@@ -879,12 +884,12 @@ int main(int argc, char** argv)
     for (i=1; i<6; i++)
     {
       strcpy(szFormat, szImage);
-      sprintf(szFormat+len-5, "%%0%dd%s", i, szExt);
+      sprintf(szFormat+len-5, "%%0%dd%%s", i);
       cur = 0;
-      sprintf(szNext, szFormat, cur);
+      sprintf(szNext, szFormat, cur, szExt);
       if ((f = fopen(szNext, "rb")) != 0) break;
       cur = 1;
-      sprintf(szNext, szFormat, cur);
+      sprintf(szNext, szFormat, cur, szExt);
       if ((f = fopen(szNext, "rb")) != 0) break;
     }
 
@@ -912,20 +917,11 @@ int main(int argc, char** argv)
     }
     cur = atoi(szExt-i+1);
     strcpy(szFormat, szImage);
-    sprintf(szFormat+len-3-i, "%%0%dd%s", i-1, szExt);
+    sprintf(szFormat+len-3-i, "%%0%dd%%s", i-1);
     strcpy(szNext, szImage);
   }
 
   frames = 0;
-
-  for (i=0; i<256; i++)
-  {
-    palette[i].r = palette[i].g = palette[i].b = i;
-    trns[i] = 255;
-    stats[i].i = i;
-    stats[i].num = 0;
-    stats[i].trans = 0;
-  }
 
   if ((f = fopen(szNext, "rb")) == 0)
   {
@@ -937,81 +933,871 @@ int main(int argc, char** argv)
   {
     frames++;
     fclose(f);
-    sprintf(szNext, szFormat, cur+frames);
+    sprintf(szNext, szFormat, cur+frames, szExt);
     f = fopen(szNext, "rb");
   } 
   while (f != 0);
 
-  images = (unsigned char **)malloc(frames*sizeof(unsigned char *));
-  bigcube = (unsigned char *)malloc(256*256*32);
-  if (!images || !bigcube)
+  img = (image_info *)malloc(frames*sizeof(image_info));
+  if (img == NULL)
   {
     printf( "Error: not enough memory\n" );
     return 1;
   }
 
-  memset(bigcube, 0, 256*256*32);
+  memset(&cube, 0, sizeof(cube));
+  memset(&gray, 0, sizeof(gray));
 
   for (i=0; i<256; i++)
-    bits[i] = ((i>>7)&1) + ((i>>6)&1) + ((i>>5)&1) + ((i>>4)&1) + ((i>>3)&1) + ((i>>2)&1) + ((i>>1)&1) + (i&1);
+  {
+    col[i].num = 0;
+    col[i].r = col[i].g = col[i].b = i;
+    col[i].a = trns[i] = 255;
+  }
 
   for (i=0; i<frames; i++)
   {
-    int w, h, d, t, res;
-    int ps, ts;
-    rgb           pl[256];
-    unsigned char tr[256];
+    int res;
 
-    sprintf(szNext, szFormat, cur+i);
+    sprintf(szNext, szFormat, cur+i, szExt);
     printf("reading %s (%d of %d)\n", szNext, i-first+1, frames-first);
 
     if (input_ext == 1)
-      images[i] = LoadPNG(szNext, &w, &h, &d, &t, &pl[0], &ps, &tr[0], &ts, &res);
+      res = LoadPNG(szNext, &img[i]);
     else
-      images[i] = LoadTGA(szNext, &w, &h, &d, &t, &pl[0], &ps, &tr[0], &ts, &res);
+      res = LoadTGA(szNext, &img[i]);
 
-    if (images[i] == NULL)
+    if (res)
     {
       printf("Error: Load%s(%s) failed\n", (input_ext == 1) ? "PNG" : "TGA", szNext);
       return res;
     }
 
-    if (i == 0)
+    for (j=img[i].ps; j<256; j++)
+      img[i].pl[j].r = img[i].pl[j].g = img[i].pl[j].b = j;
+
+    for (j=img[i].ts; j<256; j++)
+      img[i].tr[j] = 255;
+
+    img[i].num = delay_num;
+    img[i].den = delay_den;
+
+    sprintf(szNext, szFormat, cur+i, ".txt");
+    f = fopen(szNext, "rt");
+    if (f != 0)
     {
-      width = w;
-      height = h;
-      depth = d;
-      coltype = t;
-      palsize = ps;
-      trnssize = ts;
-      memset(trns, 255, 256);
-      if (ps) memcpy(palette, pl, ps*3);
-      if (ts) memcpy(trns, tr, ts);
+      char  szStr[256];
+      int   d1, d2;
+      if (fgets(szStr, 256, f) != NULL)
+      {
+        res = sscanf(szStr, "delay=%d/%d", &d1, &d2);
+        if (res == 2)
+        {
+         if (d1 != 0) img[i].num = d1; else img[i].num = 1;
+         if (d2 != 0) img[i].den = d2; else img[i].den = 10;
+        } 
+      }
+      fclose(f);
+    }
+
+    if (img[0].w != img[i].w || img[0].h != img[i].h)
+    {
+      printf("Error at %s: different image size\n", szNext);
+      return 1;
+    }
+
+    if (i == 0)
+      coltype = img[0].t;
+    else
+    if (img[0].ps != img[i].ps || memcmp(img[0].pl, img[i].pl, img[0].ps*3) != 0)
+      coltype = 6;
+    else
+    if (img[0].ts != img[i].ts || memcmp(img[0].tr, img[i].tr, img[0].ts) != 0)
+      coltype = 6;
+    else
+    if (img[i].t != 3)
+    {
+      if (coltype != 3)
+        coltype |= img[i].t;
+      else
+        coltype = 6;
     }
     else
+      if (coltype != 3)
+        coltype = 6;
+  }
+
+  width = img[0].w;
+  height = img[0].h;
+
+  /* Upconvert to common coltype - start */
+  for (i=0; i<frames; i++)
+  {
+    if (coltype == 6 && img[i].t != 6)
     {
-      if (width != w || height != h)
+      dst = (unsigned char *)malloc(width*height*4);
+      if (dst == NULL)
       {
-        printf("Error at %s: different image size\n", szNext);
+        printf( "Error: not enough memory\n" );
         return 1;
       }
-      if (depth != d || coltype != t)
+      if (img[i].t == 0)
       {
-        printf("Error at %s: different image type\n", szNext);
+        sp = img[i].p;
+        dp = dst;
+        if (img[i].ts == 0)
+        for (j=0; j<width*height; j++)
+        {
+          *dp++ = *sp;
+          *dp++ = *sp;
+          *dp++ = *sp++;
+          *dp++ = 255;
+        }
+        else
+        for (j=0; j<width*height; j++)
+        {
+          g = *sp++;
+          *dp++ = g;
+          *dp++ = g;
+          *dp++ = g;
+          *dp++ = (img[i].tr[1] == g) ? 0 : 255;
+        }
+      }
+      else
+      if (img[i].t == 2)
+      {
+        sp = img[i].p;
+        dp = dst;
+        if (img[i].ts == 0)
+        for (j=0; j<width*height; j++)
+        {
+          *dp++ = *sp++;
+          *dp++ = *sp++;
+          *dp++ = *sp++;
+          *dp++ = 255;
+        }
+        else
+        for (j=0; j<width*height; j++)
+        {
+          r = *sp++;
+          g = *sp++;
+          b = *sp++;
+          *dp++ = r;
+          *dp++ = g;
+          *dp++ = b;
+          *dp++ = (img[i].tr[1] == r && img[i].tr[3] == g && img[i].tr[5] == b) ? 0 : 255;
+        }
+      }
+      else
+      if (img[i].t == 3)
+      {
+        sp = img[i].p;
+        dp = dst;
+        for (j=0; j<width*height; j++, sp++)
+        {
+          *dp++ = img[i].pl[*sp].r;
+          *dp++ = img[i].pl[*sp].g;
+          *dp++ = img[i].pl[*sp].b;
+          *dp++ = img[i].tr[*sp];
+        }
+      }
+      else
+      if (img[i].t == 4)
+      {
+        sp = img[i].p;
+        dp = dst;
+        for (j=0; j<width*height; j++)
+        {
+          *dp++ = *sp;
+          *dp++ = *sp;
+          *dp++ = *sp++;
+          *dp++ = *sp++;
+        }
+      }
+      free(img[i].p);
+      img[i].p = dst;
+    }
+    else
+    if (coltype == 4 && img[i].t == 0)
+    {
+      dst = (unsigned char *)malloc(width*height*2);
+      if (dst == NULL)
+      {
+        printf( "Error: not enough memory\n" );
         return 1;
       }
-      if (palsize < ps || memcmp(palette, pl, ps*3) != 0)
+      sp = img[i].p;
+      dp = dst;
+      for (j=0; j<width*height; j++)
       {
-        printf("Error at %s: different palette\n", szNext);
+        *dp++ = *sp++;
+        *dp++ = 255;
+      }
+      free(img[i].p);
+      img[i].p = dst;
+    }
+    else
+    if (coltype == 2 && img[i].t == 0)
+    {
+      dst = (unsigned char *)malloc(width*height*3);
+      if (dst == NULL)
+      {
+        printf( "Error: not enough memory\n" );
         return 1;
       }
-      if (trnssize != ts || memcmp(trns, tr, ts) != 0)
+      sp = img[i].p;
+      dp = dst;
+      for (j=0; j<width*height; j++)
       {
-        printf("Error at %s: different tRNS chunk\n", szNext);
-        return 1;
+        *dp++ = *sp;
+        *dp++ = *sp;
+        *dp++ = *sp++;
+      }
+      free(img[i].p);
+      img[i].p = dst;
+    }
+  }
+  /* Upconvert to common coltype - end */
+
+  /* Dirty transparency optimization - start */
+  if (coltype == 6)
+  {
+    for (i=0; i<frames; i++)
+    {
+      sp = img[i].p;
+      for (j=0; j<width*height; j++, sp+=4)
+        if (sp[3] == 0)
+           sp[0] = sp[1] = sp[2] = 0;
+    }
+  }
+  else
+  if (coltype == 4)
+  {
+    for (i=0; i<frames; i++)
+    {
+      sp = img[i].p;
+      for (j=0; j<width*height; j++, sp+=2)
+        if (sp[1] == 0)
+          sp[0] = 0;
+    }
+  }
+  /* Dirty transparency optimization - end */
+
+  /* Downconvert optimizations - start */
+  has_tcolor = 0;
+  palsize = trnssize = 0;
+
+  if (coltype == 6 && !keep_coltype)
+  {
+    int transparent = 255;
+    int simple_trans = 1;
+    int grayscale = 1;
+    int colors = 0;
+
+    for (i=0; i<frames; i++)
+    {
+      sp = img[i].p;
+      for (j=0; j<width*height; j++)
+      {
+        r = *sp++;
+        g = *sp++;
+        b = *sp++;
+        a = *sp++;
+        transparent &= a;
+
+        if (a != 0)
+        {
+          if (a != 255)
+            simple_trans = 0;
+          else
+            if (((r | g | b) & 15) == 0)
+              cube[(r<<4) + g + (b>>4)] = 1;
+
+          if (r != g || g != b)
+            grayscale = 0;
+          else
+            gray[r] = 1;
+        }
+
+        if (colors <= 256)
+        {
+          int found = 0;
+          for (k=0; k<colors; k++)
+          if (col[k].r == r && col[k].g == g && col[k].b == b && col[k].a == a)
+          {
+            found = 1;
+            col[k].num++;
+            break;
+          }
+          if (found == 0)
+          {
+            if (colors < 256)
+            {
+              col[colors].num++;
+              col[colors].r = r;
+              col[colors].g = g;
+              col[colors].b = b;
+              col[colors].a = a;
+              if (a == 0) has_tcolor = 1;
+            }
+            colors++;
+          }
+        }
+      }
+    }
+
+    if (grayscale && simple_trans && colors<=256) /* 6 -> 0 */
+    {
+      coltype = 0;
+
+      for (i=0; i<256; i++)
+      if (gray[i] == 0)
+      {
+        trns[0] = 0;
+        trns[1] = i;
+        trnssize = 2;
+        break;
+      }
+
+      for (i=0; i<frames; i++)
+      {
+        sp = dp = img[i].p;
+        for (j=0; j<width*height; j++)
+        {
+          r = *sp++;
+          g = *sp++;
+          b = *sp++;
+          if (*sp++ == 0) 
+            *dp++ = trns[1];
+          else
+            *dp++ = g;
+        }
+      }
+    }
+    else
+    if (colors<=256)   /* 6 -> 3 */
+    {
+      coltype = 3;
+
+      if (has_tcolor==0 && colors<256)
+        col[colors++].a = 0;
+        
+      qsort(&col[0], colors, sizeof(COLORS), cmp_colors);
+
+      palsize = colors;
+      for (i=0; i<colors; i++)
+      {
+        palette[i].r = col[i].r;
+        palette[i].g = col[i].g;
+        palette[i].b = col[i].b;
+        trns[i]      = col[i].a;
+        if (trns[i] != 255) trnssize = i+1;
+      }
+
+      for (i=0; i<frames; i++)
+      {
+        sp = dp = img[i].p;
+        for (j=0; j<width*height; j++)
+        {
+          r = *sp++;
+          g = *sp++;
+          b = *sp++;
+          a = *sp++;
+          for (k=0; k<colors; k++)
+            if (col[k].r == r && col[k].g == g && col[k].b == b && col[k].a == a)
+              break;
+          *dp++ = k;
+        }
+      }
+    }
+    else
+    if (grayscale)     /* 6 -> 4 */
+    {
+      coltype = 4;
+      for (i=0; i<frames; i++)
+      {
+        sp = dp = img[i].p;
+        for (j=0; j<width*height; j++)
+        {
+          r = *sp++;
+          g = *sp++;
+          *dp++ = *sp++;
+          *dp++ = *sp++;
+        }
+      }
+    }
+    else
+    if (simple_trans)  /* 6 -> 2 */
+    {
+      for (i=0; i<4096; i++)
+      if (cube[i] == 0)
+      {
+        trns[0] = 0;
+        trns[1] = (i>>4)&0xF0;
+        trns[2] = 0;
+        trns[3] = i&0xF0;
+        trns[4] = 0;
+        trns[5] = (i<<4)&0xF0;
+        trnssize = 6;
+        break;
+      }
+      if (transparent == 255)
+      {
+        coltype = 2;
+        for (i=0; i<frames; i++)
+        {
+          sp = dp = img[i].p;
+          for (j=0; j<width*height; j++)
+          {
+            *dp++ = *sp++;
+            *dp++ = *sp++;
+            *dp++ = *sp++;
+            sp++;
+          }
+        }
+      }
+      else
+      if (trnssize != 0)
+      {
+        coltype = 2;
+        for (i=0; i<frames; i++)
+        {
+          sp = dp = img[i].p;
+          for (j=0; j<width*height; j++)
+          {
+            r = *sp++;
+            g = *sp++;
+            b = *sp++;
+            a = *sp++;
+            if (a == 0)
+            {
+              *dp++ = trns[1];
+              *dp++ = trns[3];
+              *dp++ = trns[5];
+            }
+            else
+            {
+              *dp++ = r;
+              *dp++ = g;
+              *dp++ = b;
+            }
+          }
+        }
       }
     }
   }
+  else
+  if (coltype == 2)
+  {
+    int grayscale = 1;
+    int colors = 0;
+
+    for (i=0; i<frames; i++)
+    {
+      sp = img[i].p;
+      for (j=0; j<width*height; j++)
+      {
+        r = *sp++;
+        g = *sp++;
+        b = *sp++;
+
+        if (img[i].ts == 0)
+          if (((r | g | b) & 15) == 0)
+            cube[(r<<4) + g + (b>>4)] = 1;
+
+        if (r != g || g != b)
+          grayscale = 0;
+        else
+          gray[r] = 1;
+
+        if (colors <= 256)
+        {
+          int found = 0;
+          for (k=0; k<colors; k++)
+          if (col[k].r == r && col[k].g == g && col[k].b == b)
+          {
+            found = 1;
+            col[k].num++;
+            break;
+          }
+          if (found == 0)
+          {
+            if (colors < 256)
+            {
+              col[colors].num++;
+              col[colors].r = r;
+              col[colors].g = g;
+              col[colors].b = b;
+              if (img[i].ts == 6 && img[i].tr[1] == r && img[i].tr[3] == g && img[i].tr[5] == b)
+              {
+                col[colors].a = 0;
+                has_tcolor = 1;
+              }
+            }
+            colors++;
+          }
+        }
+      }
+    }
+
+    if (grayscale && colors<=256 && !keep_coltype) /* 2 -> 0 */
+    {
+      for (i=0; i<256; i++)
+      if (gray[i] == 0)
+      {
+        trns[0] = 0;
+        trns[1] = i;
+        trnssize = 2;
+        break;
+      }
+      if (img[0].ts == 0)
+      {
+        coltype = 0;
+        for (i=0; i<frames; i++)
+        {
+          sp = dp = img[i].p;
+          for (j=0; j<width*height; j++, sp+=3)
+            *dp++ = *sp;
+        }
+      }
+      else
+      if (trnssize != 0)
+      {
+        coltype = 0;
+        for (i=0; i<frames; i++)
+        {
+          sp = dp = img[i].p;
+          for (j=0; j<width*height; j++)
+          {
+            r = *sp++;
+            g = *sp++;
+            b = *sp++;
+            if (img[i].tr[1] == r && img[i].tr[3] == g && img[i].tr[5] == b)
+              *dp++ = trns[1];
+            else
+              *dp++ = g;
+          }
+        }
+      }
+    }
+    else
+    if (colors<=256 && !keep_coltype)   /* 2 -> 3 */
+    {
+      coltype = 3;
+
+      if (has_tcolor==0 && colors<256)
+        col[colors++].a = 0;
+        
+      qsort(&col[0], colors, sizeof(COLORS), cmp_colors);
+
+      palsize = colors;
+      for (i=0; i<colors; i++)
+      {
+        palette[i].r = col[i].r;
+        palette[i].g = col[i].g;
+        palette[i].b = col[i].b;
+        trns[i]      = col[i].a;
+        if (trns[i] != 255) trnssize = i+1;
+      }
+
+      for (i=0; i<frames; i++)
+      {
+        sp = dp = img[i].p;
+        for (j=0; j<width*height; j++)
+        {
+          r = *sp++;
+          g = *sp++;
+          b = *sp++;
+
+          for (k=0; k<colors; k++)
+            if (col[k].r == r && col[k].g == g && col[k].b == b)
+              break;
+          *dp++ = k;
+        }
+      }
+    }
+    else /* 2 -> 2 */
+    {
+      if (img[0].ts == 0)
+      for (i=0; i<4096; i++)
+      if (cube[i] == 0)
+      {
+        trns[0] = 0;
+        trns[1] = (i>>4)&0xF0;
+        trns[2] = 0;
+        trns[3] = i&0xF0;
+        trns[4] = 0;
+        trns[5] = (i<<4)&0xF0;
+        trnssize = 6;
+        break;
+      }
+    }
+  }
+  else
+  if (coltype == 4 && !keep_coltype)
+  {
+    int simple_trans = 1;
+    int colors = 0;
+
+    for (i=0; i<frames; i++)
+    {
+      sp = img[i].p;
+      for (j=0; j<width*height; j++)
+      {
+        g = *sp++;
+        a = *sp++;
+
+        if (a != 0) 
+        {
+          if (a != 255)
+            simple_trans = 0;
+          else
+            gray[g] = 1;
+        }
+
+        if (colors <= 256)
+        {
+          int found = 0;
+          for (k=0; k<colors; k++)
+          if (col[k].g == g && col[k].a == a)
+          {
+            found = 1;
+            col[k].num++;
+            break;
+          }
+          if (found == 0)
+          {
+            if (colors < 256)
+            {
+              col[colors].num++;
+              col[colors].r = g;
+              col[colors].g = g;
+              col[colors].b = g;
+              col[colors].a = a;
+              if (a == 0) has_tcolor = 1;
+            }
+            colors++;
+          }
+        }
+      }
+    }
+
+    if (simple_trans && colors<=256)   /* 4 -> 0 */
+    {
+      coltype = 0;
+
+      for (i=0; i<256; i++)
+      if (gray[i] == 0)
+      {
+        trns[0] = 0;
+        trns[1] = i;
+        trnssize = 2;
+        break;
+      }
+
+      for (i=0; i<frames; i++)
+      {
+        sp = dp = img[i].p;
+        for (j=0; j<width*height; j++)
+        {
+          g = *sp++;
+          if (*sp++ == 0) 
+            *dp++ = trns[1];
+          else
+            *dp++ = g;
+        }
+      }
+    }
+    else
+    if (colors<=256)   /* 4 -> 3 */
+    {
+      coltype = 3;
+
+      if (has_tcolor==0 && colors<256)
+        col[colors++].a = 0;
+        
+      qsort(&col[0], colors, sizeof(COLORS), cmp_colors);
+
+      palsize = colors;
+      for (i=0; i<colors; i++)
+      {
+        palette[i].r = col[i].r;
+        palette[i].g = col[i].g;
+        palette[i].b = col[i].b;
+        trns[i]      = col[i].a;
+        if (trns[i] != 255) trnssize = i+1;
+      }
+
+      for (i=0; i<frames; i++)
+      {
+        sp = dp = img[i].p;
+        for (j=0; j<width*height; j++)
+        {
+          g = *sp++;
+          a = *sp++;
+          for (k=0; k<colors; k++)
+            if (col[k].g == g && col[k].a == a)
+              break;
+          *dp++ = k;
+        }
+      }
+    }
+  }
+  else
+  if (coltype == 3)
+  {
+    int simple_trans = 1;
+    int grayscale = 1;
+    int colors = 0;
+
+    for (i=0; i<img[0].ps; i++)
+    {
+      col[i].r = img[0].pl[i].r;
+      col[i].g = img[0].pl[i].g;
+      col[i].b = img[0].pl[i].b;
+      col[i].a = img[0].tr[i];
+    }
+
+    for (i=0; i<frames; i++)
+    {
+      sp = img[i].p;
+      for (j=0; j<width*height; j++)
+        col[*sp++].num++;
+    }
+
+    for (i=0; i<256; i++)
+    if (col[i].num != 0)
+    {
+      colors = i+1;
+      if (col[i].a != 0)
+      {
+        if (col[i].a != 255)
+          simple_trans = 0;
+        else
+        if (col[i].r != col[i].g || col[i].g != col[i].b)
+          grayscale = 0;
+        else
+          gray[col[i].g] = 1;
+      }
+      else
+        has_tcolor = 1;
+    }
+    
+    if (grayscale && simple_trans && !keep_coltype) /* 3 -> 0 */
+    {
+      for (i=0; i<256; i++)
+      if (gray[i] == 0)
+      {
+        trns[0] = 0;
+        trns[1] = i;
+        trnssize = 2;
+        break;
+      }
+      if (!has_tcolor)
+      {
+        coltype = 0;
+        for (i=0; i<frames; i++)
+        {
+          sp = img[i].p;
+          for (j=0; j<width*height; j++, sp++)
+            *sp = img[i].pl[*sp].g;
+        }
+      }
+      else
+      if (trnssize != 0)
+      {
+        coltype = 0;
+        for (i=0; i<frames; i++)
+        {
+          sp = img[i].p;
+          for (j=0; j<width*height; j++, sp++)
+          {
+            if (col[*sp].a == 0)
+              *sp = trns[1];
+            else
+              *sp = img[i].pl[*sp].g;
+          }
+        }
+      }
+    }
+    else
+    if (!keep_palette)                 /* 3 -> 3 */
+    {
+      if (!has_tcolor)
+      for (i=0; i<256; i++)
+      if (col[i].num == 0)
+      {
+        col[i].a = 0;
+        has_tcolor = 1;
+        break;
+      }
+
+      qsort(&col[0], colors, sizeof(COLORS), cmp_colors);
+
+      for (i=0; i<colors; i++)
+      {
+        palette[i].r = col[i].r;
+        palette[i].g = col[i].g;
+        palette[i].b = col[i].b;
+        trns[i]      = col[i].a;
+        if (col[i].num != 0)
+        { 
+          palsize = i+1;
+          if (trns[i] != 255) 
+            trnssize = i+1;
+        }
+      }
+
+      for (i=0; i<frames; i++)
+      {
+        sp = img[i].p;
+        for (j=0; j<width*height; j++)
+        {
+          r = img[i].pl[*sp].r;
+          g = img[i].pl[*sp].g;
+          b = img[i].pl[*sp].b;
+          a = img[i].tr[*sp];
+
+          for (k=0; k<palsize; k++)
+            if (col[k].r == r && col[k].g == g && col[k].b == b && col[k].a == a)
+              break;
+          *sp++ = k;
+        }
+      }
+    }
+    else
+    {
+      palsize = img[0].ps;
+      trnssize = img[0].ts;
+      for (i=0; i<palsize; i++)
+      {
+        palette[i].r = col[i].r;
+        palette[i].g = col[i].g;
+        palette[i].b = col[i].b;
+      }
+      for (i=0; i<trnssize; i++)
+        trns[i] = col[i].a;
+    }
+  }
+  else
+  if (coltype == 0 && img[0].ts == 0)  /* 0 -> 0 */
+  {
+    for (i=0; i<frames; i++)
+    {
+      sp = img[i].p;
+      for (j=0; j<width*height; j++)
+        gray[*sp++] = 1;
+    }
+    for (i=0; i<256; i++)
+    if (gray[i] == 0)
+    {
+      trns[0] = 0;
+      trns[1] = i;
+      trnssize = 2;
+      break;
+    }
+  }
+  /* Downconvert optimizations - end */
 
   bpp = 1;
   if (coltype == 2)
@@ -1023,290 +1809,7 @@ int main(int argc, char** argv)
   if (coltype == 6)
     bpp = 4;
 
-  rowbytes  = width * bpp;
-  imagesize = rowbytes * height;
-  idat_size = (rowbytes + 1) * height;
-  zbuf_size = idat_size + ((idat_size + 7) >> 3) + ((idat_size + 63) >> 6) + 11;
-
-  /* Optimizations  - start */
   has_tcolor = 0;
-  tcolor = 0;
-
-  if (coltype == 6)
-  {
-    int transparency = 0;
-    int partial_transparency = 0;
-
-    has_tcolor = 1;
-    for (i=0; i<frames; i++)
-    {
-      sp = images[i];
-      for (j=0; j<width*height; j++, sp+=4)
-      {
-        if (sp[3] != 255)
-        {
-          transparency = 1;
-          if (sp[3] == 0)
-           sp[0] = sp[1] = sp[2] = 0;
-          else
-            partial_transparency = 1;
-        }
-      }
-    }
-
-    if (!keep_coltype)
-    {
-      if (transparency == 0)
-      {
-        has_tcolor = 0;
-        coltype = 2;
-        bpp = 3;
-        rowbytes  = width * bpp;
-        imagesize = rowbytes * height;
-        for (i=0; i<frames; i++)
-        {
-          sp = dp = images[i];
-          for (j=0; j<width*height; j++)
-          {
-            *dp++ = *sp++;
-            *dp++ = *sp++;
-            *dp++ = *sp++;
-            sp++;
-          }
-        }
-      }
-      else
-      if (partial_transparency == 0)
-      {
-        int colors = 0;
-        for (i=0; i<frames; i++)
-        {
-          sp = images[i];
-          for (j=0; j<width*height; j++)
-          {
-            r = *sp++;
-            g = *sp++;
-            b = *sp++;
-            c = (b<<16) + (g<<8) + r;
-            if (*sp++ != 0)
-              bigcube[c>>3] |= (1<<(r & 7));
-          }
-        }
-        sp = bigcube;
-        for (i=0; i<256*256*32; i++)
-          colors += bits[*sp++];
-
-        if (colors + has_tcolor <= 256)
-        {
-          palette[0].r = palette[0].g = palette[0].b = trns[0] = 0;
-          palsize = trnssize = 1;
-          for (i=0; i<256*256*32; i++)
-          if ((c = bigcube[i]) != 0)
-          {
-            for (n=0; n<8; n++, c>>=1)
-            if (c&1)
-            {
-              palette[palsize].b = i>>13;
-              palette[palsize].g = (i>>5)&255;
-              palette[palsize].r = ((i&31)<<3) + n;
-              palsize++;
-            }
-          }
-          coltype = 3;
-          bpp = 1;
-          rowbytes  = width;
-          imagesize = rowbytes * height;
-          for (i=0; i<frames; i++)
-          {
-            sp = dp = images[i];
-            for (j=0; j<width*height; j++)
-            {
-              r = *sp++;
-              g = *sp++;
-              b = *sp++;
-              if (*sp++ != 0)
-              {
-                for (c=1; c<palsize; c++)
-                  if (r==palette[c].r && g==palette[c].g && b==palette[c].b)
-                    break;
-                *dp++ = c;
-              }
-              else
-                *dp++ = 0;
-            }
-          }
-        }
-      }
-    }
-  }
-
-  if (coltype == 2)
-  {
-    int colors = 0;
-    if (trnssize)
-    {
-      has_tcolor = 1;
-      tcolor = (((trns[5]<<8)+trns[3])<<8)+trns[1];
-    }
-
-    for (i=0; i<frames; i++)
-    {
-      sp = images[i];
-      for (j=0; j<width*height; j++)
-      {
-        r = *sp++;
-        g = *sp++;
-        b = *sp++;
-        c = (b<<16) + (g<<8) + r;
-        if (has_tcolor == 0 || c != tcolor)
-          bigcube[c>>3] |= (1<<(r & 7));
-      }
-    }
-
-    sp = bigcube;
-    for (i=0; i<256*256*32; i++)
-    {
-      c = *sp++;
-      if (has_tcolor == 0 && c == 0)
-      {
-        has_tcolor = 1;
-        tcolor = i<<3;
-        trnssize = 6;
-        trns[0] = 0; trns[1] = (i&31)<<3;
-        trns[2] = 0; trns[3] = (i>>5)&255;
-        trns[4] = 0; trns[5] = i>>13;
-      } 
-      colors += bits[c];
-    }
-
-    if (!keep_coltype)
-    {
-      if (colors + has_tcolor <= 256)
-      {
-        palsize = trnssize = 0;
-        trns[0] = trns[1] = trns[2] = trns[3] = trns[4] = trns[5] = 255;
-        if (has_tcolor == 1)
-        {
-          palette[0].r = tcolor&255;
-          palette[0].g = (tcolor>>8)&255;
-          palette[0].b = (tcolor>>16)&255;
-          trns[0] = 0;
-          palsize = trnssize = 1;
-        }
-        for (i=0; i<256*256*32; i++)
-        if ((c = bigcube[i]) != 0)
-        {
-          for (n=0; n<8; n++, c>>=1)
-          if (c&1)
-          {
-            palette[palsize].b = i>>13;
-            palette[palsize].g = (i>>5)&255;
-            palette[palsize].r = ((i&31)<<3) + n;
-            palsize++;
-          }
-        }
-        coltype = 3;
-        bpp = 1;
-        rowbytes  = width;
-        imagesize = rowbytes * height;
-        for (i=0; i<frames; i++)
-        {
-          sp = dp = images[i];
-          for (j=0; j<width*height; j++)
-          {
-            r = *sp++;
-            g = *sp++;
-            b = *sp++;
-            for (c=0; c<palsize; c++)
-              if (r==palette[c].r && g==palette[c].g && b==palette[c].b)
-                break;
-            *dp++ = c;
-          }
-        }
-      }
-    }
-  }
-
-  if (coltype == 3)
-  {
-    for (i=0; i<trnssize; i++)
-    if (trns[i] == 0)
-    {
-      stats[i].trans = 1;
-      has_tcolor = 1;
-      tcolor = i;
-      break;
-    }
-
-    for (i=0; i<frames; i++)
-    {
-      sp = images[i];
-      for (j=0; j<imagesize; j++)
-        stats[*sp++].num++;
-    }
-
-    if (!has_tcolor)
-    for (i=0; i<256; i++)
-    if (stats[i].num == 0)
-    {
-      trns[i] = 0;
-      stats[i].trans = 1;
-      has_tcolor = 1;
-      tcolor = i;
-      break;
-    }
-
-    if (!keep_palette)
-    {
-      rgb           pl[256];
-      unsigned char tr[256];
-      unsigned int  sh[256];
-
-      /* sort the palette, by color usage */
-      qsort(&stats[0], 256, sizeof(STATS), cmp_stats);
-      tcolor = 0;
-
-      palsize = trnssize = 0;
-      for (i=0; i<256; i++)
-      {
-        pl[i].r = palette[stats[i].i].r;
-        pl[i].g = palette[stats[i].i].g;
-        pl[i].b = palette[stats[i].i].b;
-        tr[i]   = trns[stats[i].i];
-
-        if (stats[i].num != 0)
-          palsize = i+1;
-
-        if ((tr[i] != 255) && (stats[i].num != 0 || i==0))
-          trnssize = i+1;
-
-        sh[stats[i].i] = i;
-      }
-
-      if (palsize) memcpy(palette, pl, palsize*3);
-      if (trnssize) memcpy(trns, tr, trnssize);
-
-      for (i=0; i<frames; i++)
-      {
-        sp = images[i];
-        for (j=0; j<imagesize; j++)
-          sp[j] = sh[sp[j]];
-      }
-    }
-  }
-
-  if (coltype == 4)
-  {
-    has_tcolor = 1;
-    for (i=0; i<frames; i++)
-    {
-      sp = images[i];
-      for (j=0; j<width*height; j++, sp+=2)
-        if (sp[1] == 0)
-          sp[0] = 0;
-    }
-  }
-
   if (coltype == 0)
   {
     if (trnssize)
@@ -1315,7 +1818,36 @@ int main(int argc, char** argv)
       tcolor = trns[1];
     }
   }
-  /* Optimizations  - end */
+  else
+  if (coltype == 2)
+  {
+    if (trnssize)
+    {
+      has_tcolor = 1;
+      tcolor = (((trns[5]<<8)+trns[3])<<8)+trns[1];
+    }
+  }
+  else
+  if (coltype == 3)
+  {
+    for (i=0; i<trnssize; i++)
+    if (trns[i] == 0)
+    {
+      has_tcolor = 1;
+      tcolor = i;
+      break;
+    }
+  }
+  else
+  {
+    has_tcolor = 1;
+    tcolor = 0;
+  }
+
+  rowbytes  = width * bpp;
+  imagesize = rowbytes * height;
+  idat_size = (rowbytes + 1) * height;
+  zbuf_size = idat_size + ((idat_size + 7) >> 3) + ((idat_size + 63) >> 6) + 11;
 
   for (i=0; i<12; i++)
   {
@@ -1337,7 +1869,7 @@ int main(int argc, char** argv)
     }
   }
 
-  imagetemp = (unsigned char *)malloc(imagesize);
+  img_temp = (unsigned char *)malloc(imagesize);
   zbuf = (unsigned char *)malloc(zbuf_size);
   row_buf = (unsigned char *)malloc(rowbytes + 1);
   sub_row = (unsigned char *)malloc(rowbytes + 1);
@@ -1345,7 +1877,7 @@ int main(int argc, char** argv)
   avg_row = (unsigned char *)malloc(rowbytes + 1);
   paeth_row = (unsigned char *)malloc(rowbytes + 1);
 
-  if (imagetemp && zbuf && row_buf && sub_row && up_row && avg_row && paeth_row)
+  if (img_temp && zbuf && row_buf && sub_row && up_row && avg_row && paeth_row)
   {
     row_buf[0] = 0;
     sub_row[0] = 1;
@@ -1370,7 +1902,7 @@ int main(int argc, char** argv)
       unsigned char   mCompression;
       unsigned char   mFilterMethod;
       unsigned char   mInterlaceMethod;
-    } ihdr = { swap32(width), swap32(height), depth, coltype, 0, 0, 0 };
+    } ihdr = { swap32(width), swap32(height), 8, coltype, 0, 0, 0 };
 
     struct acTL 
     {
@@ -1412,8 +1944,8 @@ int main(int argc, char** argv)
     h0 = height;
     bop = 0;
 
-    printf("saving frame %d of %d\n", 1-first, frames-first);
-    deflate_rect(images[0], x0, y0, w0, h0, bpp, rowbytes, zbuf_size, 0);
+    printf("saving %s (frame %d of %d)\n", szOutput, 1-first, frames-first);
+    deflate_rect(img[0].p, x0, y0, w0, h0, bpp, rowbytes, zbuf_size, 0);
 
     if (op[0].zstream.total_out <= op[1].zstream.total_out)
     {
@@ -1435,8 +1967,8 @@ int main(int argc, char** argv)
     {
       write_IDATs(f, 0, zbuf, zsize, idat_size);
 
-      printf("saving frame %d of %d\n", 1, frames-first);
-      deflate_rect(images[1], x0, y0, w0, h0, bpp, rowbytes, zbuf_size, 0);
+      printf("saving %s (frame %d of %d)\n", szOutput, 1, frames-first);
+      deflate_rect(img[1].p, x0, y0, w0, h0, bpp, rowbytes, zbuf_size, 0);
 
       if (op[0].zstream.total_out <= op[1].zstream.total_out)
       {
@@ -1460,45 +1992,42 @@ int main(int argc, char** argv)
       unsigned int op_min;
       int          op_best;
 
-      printf("saving frame %d of %d\n", i-first+2, frames-first);
+      printf("saving %s (frame %d of %d)\n", szOutput, i-first+2, frames-first);
       for (j=0; j<12; j++)
         op[j].valid = 0;
 
       /* dispose = none */
-      try_over = get_rect(width, height, images[i], images[i+1], imagetemp, &x1, &y1, &w1, &h1, bpp, has_tcolor, tcolor);
-      deflate_rect(images[i+1], x1, y1, w1, h1, bpp, rowbytes, zbuf_size, 0);
+      try_over = get_rect(width, height, img[i].p, img[i+1].p, img_temp, &x1, &y1, &w1, &h1, bpp, has_tcolor, tcolor);
+      deflate_rect(img[i+1].p, x1, y1, w1, h1, bpp, rowbytes, zbuf_size, 0);
       if (try_over)
-        deflate_rect(imagetemp, x1, y1, w1, h1, bpp, rowbytes, zbuf_size, 1);
+        deflate_rect(img_temp, x1, y1, w1, h1, bpp, rowbytes, zbuf_size, 1);
 
       /* dispose = background */
       if (has_tcolor)
       {
-        memcpy(imagetemp, images[i], imagesize);
+        memcpy(img_temp, img[i].p, imagesize);
         if (coltype == 2)
           for (j=0; j<h0; j++)
             for (k=0; k<w0; k++)
-              memcpy(imagetemp + ((j+y0)*width + (k+x0))*3, &tcolor, 3);
+              memcpy(img_temp + ((j+y0)*width + (k+x0))*3, &tcolor, 3);
         else
           for (j=0; j<h0; j++)
-            memset(imagetemp + ((j+y0)*width + x0)*bpp, tcolor, w0*bpp);
+            memset(img_temp + ((j+y0)*width + x0)*bpp, tcolor, w0*bpp);
 
-        try_over = get_rect(width, height, imagetemp, images[i+1], imagetemp, &x1, &y1, &w1, &h1, bpp, has_tcolor, tcolor);
+        try_over = get_rect(width, height, img_temp, img[i+1].p, img_temp, &x1, &y1, &w1, &h1, bpp, has_tcolor, tcolor);
 
-#ifdef FIREFOX_BUG_546272_WORKAROUND
-        if (i == first) { w1 += x1; h1 += y1; x1 = y1 = 0; }
-#endif
-        deflate_rect(images[i+1], x1, y1, w1, h1, bpp, rowbytes, zbuf_size, 2);
+        deflate_rect(img[i+1].p, x1, y1, w1, h1, bpp, rowbytes, zbuf_size, 2);
         if (try_over)
-          deflate_rect(imagetemp, x1, y1, w1, h1, bpp, rowbytes, zbuf_size, 3);
+          deflate_rect(img_temp, x1, y1, w1, h1, bpp, rowbytes, zbuf_size, 3);
       }
 
-      if (i>first)
+      if (i > first)
       {
         /* dispose = previous */
-        try_over = get_rect(width, height, images[i-1], images[i+1], imagetemp, &x1, &y1, &w1, &h1, bpp, has_tcolor, tcolor);
-        deflate_rect(images[i+1], x1, y1, w1, h1, bpp, rowbytes, zbuf_size, 4);
+        try_over = get_rect(width, height, img[i-1].p, img[i+1].p, img_temp, &x1, &y1, &w1, &h1, bpp, has_tcolor, tcolor);
+        deflate_rect(img[i+1].p, x1, y1, w1, h1, bpp, rowbytes, zbuf_size, 4);
         if (try_over)
-          deflate_rect(imagetemp, x1, y1, w1, h1, bpp, rowbytes, zbuf_size, 5);
+          deflate_rect(img_temp, x1, y1, w1, h1, bpp, rowbytes, zbuf_size, 5);
       }
 
       op_min = op[0].zstream.total_out;
@@ -1522,8 +2051,8 @@ int main(int argc, char** argv)
       fctl.mHeight    = swap32(h0);
       fctl.mXOffset   = swap32(x0);
       fctl.mYOffset   = swap32(y0);
-      fctl.mDelayNum  = swap16(delay_num);
-      fctl.mDelayDen  = swap16(delay_den);
+      fctl.mDelayNum  = swap16(img[i].num);
+      fctl.mDelayDen  = swap16(img[i].den);
       fctl.mDisposeOp = dop;
       fctl.mBlendOp   = bop;
       write_chunk(f, "fcTL", (unsigned char *)(&fctl), 26);
@@ -1536,16 +2065,16 @@ int main(int argc, char** argv)
         if (coltype == 2)
           for (j=0; j<h0; j++)
             for (k=0; k<w0; k++)
-              memcpy(images[i] + ((j+y0)*width + (k+x0))*3, &tcolor, 3);
+              memcpy(img[i].p + ((j+y0)*width + (k+x0))*3, &tcolor, 3);
         else
           for (j=0; j<h0; j++)
-            memset(images[i] + ((j+y0)*width + x0)*bpp, tcolor, w0*bpp);
+            memset(img[i].p + ((j+y0)*width + x0)*bpp, tcolor, w0*bpp);
       }
       else
       if (dop == 2)
       {
         for (j=0; j<h0; j++)
-          memcpy(images[i] + ((j+y0)*width + x0)*bpp, images[i-1] + ((j+y0)*width + x0)*bpp, w0*bpp);
+          memcpy(img[i].p + ((j+y0)*width + x0)*bpp, img[i-1].p + ((j+y0)*width + x0)*bpp, w0*bpp);
       }
       /* process apng dispose - end */
 
@@ -1572,8 +2101,8 @@ int main(int argc, char** argv)
       fctl.mHeight    = swap32(h0);
       fctl.mXOffset   = swap32(x0);
       fctl.mYOffset   = swap32(y0);
-      fctl.mDelayNum  = swap16(delay_num);
-      fctl.mDelayDen  = swap16(delay_den);
+      fctl.mDelayNum  = swap16(img[i].num);
+      fctl.mDelayDen  = swap16(img[i].den);
       fctl.mDisposeOp = 0;
       fctl.mBlendOp   = bop;
       write_chunk(f, "fcTL", (unsigned char *)(&fctl), 26);
@@ -1591,7 +2120,7 @@ int main(int argc, char** argv)
     return 1;
   }
 
-  free(imagetemp);
+  free(img_temp);
   free(zbuf);
   free(row_buf);
   free(sub_row);
@@ -1608,11 +2137,10 @@ int main(int argc, char** argv)
 
   for (i=0; i<frames; i++)
   {
-    if (images[i] != NULL)
-      free(images[i]);
+    if (img[i].p != NULL)
+      free(img[i].p);
   }
-  free(images);
-  free(bigcube);
+  free(img);
 
   printf("all done\n");
 

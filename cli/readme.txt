@@ -1,9 +1,26 @@
-APNG Assembler 2.3
+  APNG Assembler 2.4
+ 
+  Creates APNG animation from PNG/TGA image sequence.
+ 
+  http://apngasm.sourceforge.net/
+ 
+  Copyright (c) 2010-2011 Max Stepin
+  maxst@users.sourceforge.net
 
-by Max Stepin 
-maxst@users.sourceforge.net
----------------------------
-Creates APNG animation from PNG/TGA image sequence.
+  License: zlib license
+
+--------------------------------
+
+  Changes in version 2.4:
+
+- Reads delay information from .txt files
+- Accepts input files of different color types
+- Better optimization
+- zlib license
+
+--------------------------------
+
+  Usage: 
 
 Usage: 
 apngasm output.png frame001.png [options]
@@ -28,6 +45,12 @@ And you want to have 3/4 seconds delay between frames.
 The correct command will be
 
 apngasm output.png frame01.png 3 4
+
+
+If frame02.txt is found with the following one-line content, 
+it will override delay information for frame 2:
+
+delay=25/100
 
 ----------------------------------------------------------------
 Example 2: 

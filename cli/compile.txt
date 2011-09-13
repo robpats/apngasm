@@ -1,5 +1,0 @@
-- Windows binaries compiled using MSVC.
-
-- Linux and Mac OS X binaries compiled using GCC:
-
-  gcc -O2 -lz -lpng -o apngasm apngasm.c
