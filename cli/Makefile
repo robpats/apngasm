@@ -1,2 +1,2 @@
 all:
-	gcc -O2 -lz -lpng -o apngasm apngasm.c
+	gcc -O2 -o apngasm apngasm.c -lz -lpng 

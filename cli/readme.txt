@@ -1,15 +1,19 @@
-  APNG Assembler 2.4
+  APNG Assembler 2.5
  
   Creates APNG animation from PNG/TGA image sequence.
  
   http://apngasm.sourceforge.net/
  
-  Copyright (c) 2010-2011 Max Stepin
+  Copyright (c) 2010-2012 Max Stepin
   maxst@users.sourceforge.net
 
   License: zlib license
 
 --------------------------------
+
+  Changes in version 2.5:
+
+- Fixed a bug with loading mode2 or mode0 input files with tRNS
 
   Changes in version 2.4:
 
