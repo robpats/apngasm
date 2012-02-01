@@ -1,4 +1,4 @@
-/* APNG Assembler 2.5
+/* APNG Assembler 2.6
  *
  * This program creates APNG animation from PNG/TGA image sequence.
  *
@@ -29,7 +29,6 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include "png.h"     /* original (unpatched) libpng is ok */
 #include "zlib.h"
 
@@ -70,7 +69,7 @@ unsigned char * paeth_row;
 unsigned char   png_sign[8] = {137,  80,  78,  71,  13,  10,  26,  10};
 unsigned char   png_Software[27] = { 83, 111, 102, 116, 119, 97, 114, 101, '\0', 
                                      65,  80,  78,  71,  32, 65, 115, 115, 101, 
-                                    109,  98, 108, 101, 114, 32,  50,  46,  53};
+                                    109,  98, 108, 101, 114, 32,  50,  46,  54};
 
 int cmp_colors( const void *arg1, const void *arg2 )
 {
@@ -111,7 +110,7 @@ int LoadPNG(char * szImage, image_info * pInfo)
         pInfo->h = png_get_image_height(png_ptr, info_ptr);
         pInfo->t = png_get_color_type(png_ptr, info_ptr);
         depth    = png_get_bit_depth(png_ptr, info_ptr);
-        if (depth<8) png_set_expand(png_ptr);
+        if (depth<8) png_set_packing(png_ptr);
         if (depth>8) png_set_strip_16(png_ptr);
         (void)png_set_interlace_handling(png_ptr);
         png_read_update_info(png_ptr, info_ptr);
@@ -754,7 +753,7 @@ int main(int argc, char** argv)
   int     keep_palette = 0;
   int     keep_coltype = 0;
 
-  printf("\nAPNG Assembler 2.5\n\n");
+  printf("\nAPNG Assembler 2.6\n\n");
 
   if (argc <= 2)
   {
