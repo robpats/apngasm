@@ -1,4 +1,4 @@
-/* APNG Assembler 2.6
+/* APNG Assembler 2.7
  *
  * This program creates APNG animation from PNG/TGA image sequence.
  *
@@ -69,14 +69,23 @@ unsigned char * paeth_row;
 unsigned char   png_sign[8] = {137,  80,  78,  71,  13,  10,  26,  10};
 unsigned char   png_Software[27] = { 83, 111, 102, 116, 119, 97, 114, 101, '\0', 
                                      65,  80,  78,  71,  32, 65, 115, 115, 101, 
-                                    109,  98, 108, 101, 114, 32,  50,  46,  54};
+                                    109,  98, 108, 101, 114, 32,  50,  46,  55};
 
 int cmp_colors( const void *arg1, const void *arg2 )
 {
-  if ( ((COLORS*)arg2)->a == ((COLORS*)arg1)->a )
-    return (int)(((COLORS*)arg2)->num) - (int)(((COLORS*)arg1)->num);
-  else
+  if ( ((COLORS*)arg1)->a != ((COLORS*)arg2)->a )
     return (int)(((COLORS*)arg1)->a) - (int)(((COLORS*)arg2)->a);
+
+  if ( ((COLORS*)arg1)->num != ((COLORS*)arg2)->num )
+    return (int)(((COLORS*)arg2)->num) - (int)(((COLORS*)arg1)->num);
+
+  if ( ((COLORS*)arg1)->r != ((COLORS*)arg2)->r )
+    return (int)(((COLORS*)arg1)->r) - (int)(((COLORS*)arg2)->r);
+
+  if ( ((COLORS*)arg1)->g != ((COLORS*)arg2)->g )
+    return (int)(((COLORS*)arg1)->g) - (int)(((COLORS*)arg2)->g);
+
+  return (int)(((COLORS*)arg1)->b) - (int)(((COLORS*)arg2)->b);
 }
 
 int LoadPNG(char * szImage, image_info * pInfo)
@@ -110,10 +119,22 @@ int LoadPNG(char * szImage, image_info * pInfo)
         pInfo->h = png_get_image_height(png_ptr, info_ptr);
         pInfo->t = png_get_color_type(png_ptr, info_ptr);
         depth    = png_get_bit_depth(png_ptr, info_ptr);
-        if (depth<8) png_set_packing(png_ptr);
-        if (depth>8) png_set_strip_16(png_ptr);
+        if (depth < 8)
+        {
+          if (pInfo->t == PNG_COLOR_TYPE_PALETTE)
+            png_set_packing(png_ptr);
+          else
+            png_set_expand(png_ptr);
+        }
+        else
+        if (depth > 8) 
+        {
+          png_set_expand(png_ptr);
+          png_set_strip_16(png_ptr);
+        }
         (void)png_set_interlace_handling(png_ptr);
         png_read_update_info(png_ptr, info_ptr);
+        pInfo->t = png_get_color_type(png_ptr, info_ptr);
         rowbytes = png_get_rowbytes(png_ptr, info_ptr);
 
         if (png_get_PLTE(png_ptr, info_ptr, &palette, &pInfo->ps))
@@ -123,34 +144,31 @@ int LoadPNG(char * szImage, image_info * pInfo)
 
         if (png_get_tRNS(png_ptr, info_ptr, &trans_alpha, &pInfo->ts, &trans_color))
         {
-          if (pInfo->t == PNG_COLOR_TYPE_GRAY)
+          if (pInfo->ts > 0)
           {
-            if (depth == 16)
-              trans_color->gray >>= 8;
-
-            pInfo->tr[0] = 0;
-            pInfo->tr[1] = trans_color->gray & 0xFF;
-            pInfo->ts = 2;
-          }
-          else
-          if (pInfo->t == PNG_COLOR_TYPE_RGB)
-          {
-            if (depth == 16)
+            if (pInfo->t == PNG_COLOR_TYPE_GRAY)
             {
-              trans_color->red >>= 8;
-              trans_color->green >>= 8;
-              trans_color->blue >>= 8;
+              pInfo->tr[0] = 0;
+              pInfo->tr[1] = trans_color->gray & 0xFF;
+              pInfo->ts = 2;
             }
-            pInfo->tr[0] = 0;
-            pInfo->tr[1] = trans_color->red & 0xFF;
-            pInfo->tr[2] = 0;
-            pInfo->tr[3] = trans_color->green & 0xFF;
-            pInfo->tr[4] = 0;
-            pInfo->tr[5] = trans_color->blue & 0xFF;
-            pInfo->ts = 6;
+            else
+            if (pInfo->t == PNG_COLOR_TYPE_RGB)
+            {
+              pInfo->tr[0] = 0;
+              pInfo->tr[1] = trans_color->red & 0xFF;
+              pInfo->tr[2] = 0;
+              pInfo->tr[3] = trans_color->green & 0xFF;
+              pInfo->tr[4] = 0;
+              pInfo->tr[5] = trans_color->blue & 0xFF;
+              pInfo->ts = 6;
+            }
+            else
+            if (pInfo->t == PNG_COLOR_TYPE_PALETTE)
+              memcpy(pInfo->tr, trans_alpha, pInfo->ts);
+            else
+              pInfo->ts = 0;
           }
-          else
-            memcpy(pInfo->tr, trans_alpha, pInfo->ts);
         }
         else
           pInfo->ts = 0;
@@ -753,7 +771,7 @@ int main(int argc, char** argv)
   int     keep_palette = 0;
   int     keep_coltype = 0;
 
-  printf("\nAPNG Assembler 2.6\n\n");
+  printf("\nAPNG Assembler 2.7\n\n");
 
   if (argc <= 2)
   {
@@ -851,21 +869,21 @@ int main(int argc, char** argv)
   }
   else
   {
-    for (i=1; i<6; i++)
+    for (i=0; i<6; i++)
     {
-      if (*(szExt-i) < '0') break;
-      if (*(szExt-i) > '9') break;
       if (szImage == szExt-i) break;
+      if (*(szExt-i-1) < '0') break;
+      if (*(szExt-i-1) > '9') break;
     }
 
-    if (i == 1)
+    if (i == 0)
     {
       printf( "Error: *%s sequence not found\n", szExt );
       return 1;
     }
-    cur = atoi(szExt-i+1);
+    cur = atoi(szExt-i);
     strcpy(szFormat, szImage);
-    sprintf(szFormat+len-3-i, "%%0%dd%%s", i-1);
+    sprintf(szFormat+len-4-i, "%%0%dd%%s", i);
     strcpy(szNext, szImage);
   }
 
@@ -1673,29 +1691,29 @@ int main(int argc, char** argv)
     else
     if (!keep_palette)                 /* 3 -> 3 */
     {
-      if (!has_tcolor)
       for (i=0; i<256; i++)
       if (col[i].num == 0)
       {
-        col[i].a = 0;
-        has_tcolor = 1;
-        break;
+        col[i].a = 255;
+        if (!has_tcolor)
+        {
+          col[i].a = 0;
+          has_tcolor = 1;
+        }
       }
 
-      qsort(&col[0], colors, sizeof(COLORS), cmp_colors);
+      qsort(&col[0], 256, sizeof(COLORS), cmp_colors);
 
-      for (i=0; i<colors; i++)
+      for (i=0; i<256; i++)
       {
         palette[i].r = col[i].r;
         palette[i].g = col[i].g;
         palette[i].b = col[i].b;
         trns[i]      = col[i].a;
         if (col[i].num != 0)
-        { 
           palsize = i+1;
-          if (trns[i] != 255) 
-            trnssize = i+1;
-        }
+        if (trns[i] != 255) 
+          trnssize = i+1;
       }
 
       for (i=0; i<frames; i++)

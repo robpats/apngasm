@@ -1,4 +1,4 @@
-  APNG Assembler 2.6
+  APNG Assembler 2.7
  
   Creates APNG animation from PNG/TGA image sequence.
  
@@ -10,6 +10,10 @@
   License: zlib license
 
 --------------------------------
+
+  Changes in version 2.7:
+
+- Better optimization after loading paletted PNG files
 
   Changes in version 2.6:
 
