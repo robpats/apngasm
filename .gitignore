@@ -31,3 +31,21 @@
 # Debug files
 *.idb
 *.pdb
+
+# Build results
+build/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+*.log
+
+# User-specific files
+*.suo
+*.user
+
+# Cache files
+*.ncb
+*.opensdf
+*.sdf
