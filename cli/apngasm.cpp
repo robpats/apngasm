@@ -1,10 +1,10 @@
-/* APNG Assembler 2.7
+/* APNG Assembler 2.8
  *
  * This program creates APNG animation from PNG/TGA image sequence.
  *
  * http://apngasm.sourceforge.net/
  *
- * Copyright (c) 2009-2012 Max Stepin
+ * Copyright (c) 2009-2013 Max Stepin
  * maxst at users.sourceforge.net
  *
  * zlib license
@@ -29,8 +29,13 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "png.h"     /* original (unpatched) libpng is ok */
 #include "zlib.h"
+#include "7z.h"
+extern "C" {
+#include "zopfli.h"
+}
 
 #if defined(_MSC_VER) && _MSC_VER >= 1300
 #define swap16(data) _byteswap_ushort(data)
@@ -52,24 +57,30 @@ unsigned short swap16(unsigned short data) {return((data & 0xFF) << 8) | ((data 
 unsigned int swap32(unsigned int data) {return((data & 0xFF) << 24) | ((data & 0xFF00) << 8) | ((data >> 8) & 0xFF00) | ((data >> 24) & 0xFF);}
 #endif
 
-typedef struct { z_stream zstream; unsigned char * zbuf; int x, y, w, h, valid; } OP;
+typedef struct { unsigned char *p; unsigned int size; int x, y, w, h, valid, filters; } OP;
 typedef struct { unsigned int num; unsigned char r, g, b, a; } COLORS;
 typedef struct { unsigned char r, g, b; } rgb;
-typedef struct { unsigned char * p; unsigned int w, h; int t, ps, ts; rgb pl[256]; unsigned char tr[256]; unsigned short num, den; } image_info;
+typedef struct { unsigned char * p, t; unsigned int w, h; int ps, ts; rgb pl[256]; unsigned char tr[256]; unsigned short num, den; } image_info;
 
-OP      op[12];
+OP      op[6];
 COLORS  col[256];
 
-unsigned int    next_seq_num = 0;
+unsigned char * op_zbuf1;
+unsigned char * op_zbuf2;
+z_stream        op_zstream1;
+z_stream        op_zstream2;
+z_stream        fin_zstream;
+
+unsigned int    next_seq_num;
 unsigned char * row_buf;
 unsigned char * sub_row;
 unsigned char * up_row;
 unsigned char * avg_row;
 unsigned char * paeth_row;
 unsigned char   png_sign[8] = {137,  80,  78,  71,  13,  10,  26,  10};
-unsigned char   png_Software[27] = { 83, 111, 102, 116, 119, 97, 114, 101, '\0', 
-                                     65,  80,  78,  71,  32, 65, 115, 115, 101, 
-                                    109,  98, 108, 101, 114, 32,  50,  46,  55};
+unsigned char   png_Software[27] = { 83, 111, 102, 116, 119, 97, 114, 101, '\0',
+                                     65,  80,  78,  71,  32, 65, 115, 115, 101,
+                                    109,  98, 108, 101, 114, 32,  50,  46,  56};
 
 int cmp_colors( const void *arg1, const void *arg2 )
 {
@@ -88,10 +99,10 @@ int cmp_colors( const void *arg1, const void *arg2 )
   return (int)(((COLORS*)arg1)->b) - (int)(((COLORS*)arg2)->b);
 }
 
-int LoadPNG(char * szImage, image_info * pInfo)
+unsigned int LoadPNG(char * szImage, image_info * pInfo)
 {
   FILE * f;
-  int res = 0;
+  unsigned int res = 0;
 
   if ((f = fopen(szImage, "rb")) != 0)
   {
@@ -127,7 +138,7 @@ int LoadPNG(char * szImage, image_info * pInfo)
             png_set_expand(png_ptr);
         }
         else
-        if (depth > 8) 
+        if (depth > 8)
         {
           png_set_expand(png_ptr);
           png_set_strip_16(png_ptr);
@@ -136,6 +147,8 @@ int LoadPNG(char * szImage, image_info * pInfo)
         png_read_update_info(png_ptr, info_ptr);
         pInfo->t = png_get_color_type(png_ptr, info_ptr);
         rowbytes = png_get_rowbytes(png_ptr, info_ptr);
+        memset(pInfo->pl, 255, sizeof(pInfo->pl));
+        memset(pInfo->tr, 255, sizeof(pInfo->tr));
 
         if (png_get_PLTE(png_ptr, info_ptr, &palette, &pInfo->ps))
           memcpy(pInfo->pl, palette, pInfo->ps * 3);
@@ -205,10 +218,10 @@ int LoadPNG(char * szImage, image_info * pInfo)
   return res;
 }
 
-int LoadTGA(char * szImage, image_info * pInfo)
+unsigned int LoadTGA(char * szImage, image_info * pInfo)
 {
   FILE * f;
-  int res = 0;
+  unsigned int res = 0;
 
   if ((f = fopen(szImage, "rb")) != 0)
   {
@@ -462,161 +475,13 @@ void write_IDATs(FILE * f, int frame, unsigned char * data, unsigned int length,
   }
 }
 
-unsigned int get_rect(unsigned int w, unsigned int h, unsigned char *pimg1, unsigned char *pimg2, unsigned char *ptemp, unsigned int *px, unsigned int *py, unsigned int *pw, unsigned int *ph, unsigned int bpp, unsigned int has_tcolor, unsigned int tcolor)
-{
-  unsigned int   i, j;
-  unsigned int   x_min = w-1;
-  unsigned int   y_min = h-1;
-  unsigned int   x_max = 0;
-  unsigned int   y_max = 0;
-  unsigned int   diffnum = 0;
-  unsigned int   over_is_possible = 1;
-
-  if (!has_tcolor)
-    over_is_possible = 0;
-
-  if (bpp == 1)
-  {
-    unsigned char *pa = pimg1;
-    unsigned char *pb = pimg2;
-    unsigned char *pc = ptemp;
-
-    for (j=0; j<h; j++)
-    for (i=0; i<w; i++)
-    {
-      unsigned char c = *pb++;
-      if (*pa++ != c)
-      {
-        diffnum++;
-        if ((has_tcolor) && (c == tcolor)) over_is_possible = 0;
-        if (i<x_min) x_min = i;
-        if (i>x_max) x_max = i;
-        if (j<y_min) y_min = j;
-        if (j>y_max) y_max = j;
-      }
-      else
-        c = tcolor;
-
-      *pc++ = c;
-    }
-  }
-  else
-  if (bpp == 2)
-  {
-    unsigned short *pa = (unsigned short *)pimg1;
-    unsigned short *pb = (unsigned short *)pimg2;
-    unsigned short *pc = (unsigned short *)ptemp;
-
-    for (j=0; j<h; j++)
-    for (i=0; i<w; i++)
-    {
-      unsigned int c1 = *pa++;
-      unsigned int c2 = *pb++;
-      if ((c1 != c2) && ((c1>>8) || (c2>>8)))
-      {
-        diffnum++;
-        if ((c2 >> 8) != 0xFF) over_is_possible = 0;
-        if (i<x_min) x_min = i;
-        if (i>x_max) x_max = i;
-        if (j<y_min) y_min = j;
-        if (j>y_max) y_max = j;
-      }
-      else
-        c2 = 0;
-
-      *pc++ = c2;
-    }
-  }
-  else
-  if (bpp == 3)
-  {
-    unsigned char *pa = pimg1;
-    unsigned char *pb = pimg2;
-    unsigned char *pc = ptemp;
-
-    for (j=0; j<h; j++)
-    for (i=0; i<w; i++)
-    {
-      unsigned int c1 = (((pa[2]<<8)+pa[1])<<8)+pa[0];
-      unsigned int c2 = (((pb[2]<<8)+pb[1])<<8)+pb[0];
-      if (c1 != c2)
-      {
-        diffnum++;
-        if ((has_tcolor) && (c2 == tcolor)) over_is_possible = 0;
-        if (i<x_min) x_min = i;
-        if (i>x_max) x_max = i;
-        if (j<y_min) y_min = j;
-        if (j>y_max) y_max = j;
-      }
-      else
-        c2 = tcolor;
-
-      memcpy(pc, &c2, 3);
-      pa += 3;
-      pb += 3;
-      pc += 3;
-    }
-  }
-  else
-  if (bpp == 4)
-  {
-    unsigned int *pa = (unsigned int *)pimg1;
-    unsigned int *pb = (unsigned int *)pimg2;
-    unsigned int *pc = (unsigned int *)ptemp;
-
-    for (j=0; j<h; j++)
-    for (i=0; i<w; i++)
-    {
-      unsigned int c1 = *pa++;
-      unsigned int c2 = *pb++;
-      if ((c1 != c2) && ((c1>>24) || (c2>>24)))
-      {
-        diffnum++;
-        if ((c2 >> 24) != 0xFF) over_is_possible = 0;
-        if (i<x_min) x_min = i;
-        if (i>x_max) x_max = i;
-        if (j<y_min) y_min = j;
-        if (j>y_max) y_max = j;
-      }
-      else
-        c2 = 0;
-
-      *pc++ = c2;
-    }
-  }
-
-  if (diffnum == 0)
-  {
-    *px = *py = 0;
-    *pw = *ph = 1; 
-  }
-  else
-  {
-    *px = x_min;
-    *py = y_min;
-    *pw = x_max-x_min+1;
-    *ph = y_max-y_min+1;
-  }
-
-  return over_is_possible;
-}
-
-void deflate_rect(unsigned char *pdata, int x, int y, int w, int h, int bpp, int stride, int zbuf_size, int n)
+void process_rect(unsigned char * row, int rowbytes, int bpp, int stride, int h, unsigned char * rows)
 {
   int i, j, v;
   int a, b, c, pa, pb, pc, p;
-  int rowbytes = w * bpp;
   unsigned char * prev = NULL;
-  unsigned char * row  = pdata + y*stride + x*bpp;
+  unsigned char * dp  = rows;
   unsigned char * out;
-
-  op[n*2].valid = 1;
-  op[n*2].zstream.next_out = op[n*2].zbuf;
-  op[n*2].zstream.avail_out = zbuf_size;
-
-  op[n*2+1].valid = 1;
-  op[n*2+1].zstream.next_out = op[n*2+1].zbuf;
-  op[n*2+1].zstream.avail_out = zbuf_size;
 
   for (j=0; j<h; j++)
   {
@@ -681,7 +546,7 @@ void deflate_rect(unsigned char *pdata, int x, int y, int w, int h, int bpp, int
         if (sum > mins) break;
       }
       if (sum < mins)
-      { 
+      {
         mins = sum;
         best_row = avg_row;
       }
@@ -714,25 +579,264 @@ void deflate_rect(unsigned char *pdata, int x, int y, int w, int h, int bpp, int
       }
     }
 
-    op[n*2].zstream.next_in = row_buf;
-    op[n*2].zstream.avail_in = rowbytes + 1;
-    deflate(&op[n*2].zstream, Z_NO_FLUSH);
+    if (rows == NULL)
+    {
+      // deflate_rect_op()
+      op_zstream1.next_in = row_buf;
+      op_zstream1.avail_in = rowbytes + 1;
+      deflate(&op_zstream1, Z_NO_FLUSH);
 
-    op[n*2+1].zstream.next_in = best_row;
-    op[n*2+1].zstream.avail_in = rowbytes + 1;
-    deflate(&op[n*2+1].zstream, Z_NO_FLUSH);
+      op_zstream2.next_in = best_row;
+      op_zstream2.avail_in = rowbytes + 1;
+      deflate(&op_zstream2, Z_NO_FLUSH);
+    }
+    else
+    {
+      // deflate_rect_fin()
+      memcpy(dp, best_row, rowbytes+1);
+      dp += rowbytes+1;
+    }
 
     prev = row;
     row += stride;
   }
+}
 
-  deflate(&op[n*2].zstream, Z_FINISH);
-  deflate(&op[n*2+1].zstream, Z_FINISH);
+void deflate_rect_fin(int deflate_method, int iter, unsigned char * zbuf, unsigned int * zsize, int bpp, int stride, unsigned char * rows, int zbuf_size, int n)
+{
+  unsigned char * row  = op[n].p + op[n].y*stride + op[n].x*bpp;
+  int rowbytes = op[n].w*bpp;
 
-  op[n*2].x = op[n*2+1].x = x;
-  op[n*2].y = op[n*2+1].y = y;
-  op[n*2].w = op[n*2+1].w = w;
-  op[n*2].h = op[n*2+1].h = h;
+  if (op[n].filters == 0)
+  {
+    deflateInit2(&fin_zstream, Z_BEST_COMPRESSION, 8, 15, 8, Z_DEFAULT_STRATEGY);
+    unsigned char * dp  = rows;
+    for (int j=0; j<op[n].h; j++)
+    {
+      *dp++ = 0;
+      memcpy(dp, row, rowbytes);
+      dp += rowbytes;
+      row += stride;
+    }
+  }
+  else
+  {
+    deflateInit2(&fin_zstream, Z_BEST_COMPRESSION, 8, 15, 8, Z_FILTERED);
+    process_rect(row, rowbytes, bpp, stride, op[n].h, rows);
+  }
+
+  if (deflate_method == 2)
+  {
+    ZopfliOptions opt_zopfli;
+    unsigned char* data = 0;
+    size_t size = 0;
+    ZopfliInitOptions(&opt_zopfli);
+    opt_zopfli.numiterations = iter;
+    ZopfliCompress(&opt_zopfli, ZOPFLI_FORMAT_ZLIB, rows, op[n].h*(rowbytes + 1), &data, &size);
+    if (size < (size_t)zbuf_size)
+    {
+      memcpy(zbuf, data, size);
+      *zsize = size;
+    }
+    free(data);
+  }
+  else
+  if (deflate_method == 1)
+  {
+    unsigned size = zbuf_size;
+    compress_rfc1950_7z(rows, op[n].h*(rowbytes + 1), zbuf, size, iter<100 ? iter : 100, 255);
+    *zsize = size;
+  }
+  else
+  {
+    fin_zstream.next_out = zbuf;
+    fin_zstream.avail_out = zbuf_size;
+    fin_zstream.next_in = rows;
+    fin_zstream.avail_in = op[n].h*(rowbytes + 1);
+    deflate(&fin_zstream, Z_FINISH);
+    *zsize = fin_zstream.total_out;
+    deflateReset(&fin_zstream);
+  }
+}
+
+void deflate_rect_op(unsigned char *pdata, int x, int y, int w, int h, int bpp, int stride, int zbuf_size, int n)
+{
+  unsigned char * row  = pdata + y*stride + x*bpp;
+  int rowbytes = w * bpp;
+
+  op_zstream1.data_type = Z_BINARY;
+  op_zstream1.next_out = op_zbuf1;
+  op_zstream1.avail_out = zbuf_size;
+
+  op_zstream2.data_type = Z_BINARY;
+  op_zstream2.next_out = op_zbuf2;
+  op_zstream2.avail_out = zbuf_size;
+
+  process_rect(row, rowbytes, bpp, stride, h, NULL);
+
+  deflate(&op_zstream1, Z_FINISH);
+  deflate(&op_zstream2, Z_FINISH);
+  op[n].p = pdata;
+
+  if (op_zstream1.total_out < op_zstream2.total_out)
+  {
+    op[n].size = op_zstream1.total_out;
+    op[n].filters = 0;
+  }
+  else
+  {
+    op[n].size = op_zstream2.total_out;
+    op[n].filters = 1;
+  }
+  op[n].x = x;
+  op[n].y = y;
+  op[n].w = w;
+  op[n].h = h;
+  op[n].valid = 1;
+  deflateReset(&op_zstream1);
+  deflateReset(&op_zstream2);
+}
+
+void get_rect(unsigned int w, unsigned int h, unsigned char *pimage1, unsigned char *pimage2, unsigned char *ptemp, unsigned int bpp, unsigned int stride, int zbuf_size, unsigned int has_tcolor, unsigned int tcolor, int n)
+{
+  unsigned int   i, j, x0, y0, w0, h0;
+  unsigned int   x_min = w-1;
+  unsigned int   y_min = h-1;
+  unsigned int   x_max = 0;
+  unsigned int   y_max = 0;
+  unsigned int   diffnum = 0;
+  unsigned int   over_is_possible = 1;
+
+  if (!has_tcolor)
+    over_is_possible = 0;
+
+  if (bpp == 1)
+  {
+    unsigned char *pa = pimage1;
+    unsigned char *pb = pimage2;
+    unsigned char *pc = ptemp;
+
+    for (j=0; j<h; j++)
+    for (i=0; i<w; i++)
+    {
+      unsigned char c = *pb++;
+      if (*pa++ != c)
+      {
+        diffnum++;
+        if (has_tcolor && c == tcolor) over_is_possible = 0;
+        if (i<x_min) x_min = i;
+        if (i>x_max) x_max = i;
+        if (j<y_min) y_min = j;
+        if (j>y_max) y_max = j;
+      }
+      else
+        c = tcolor;
+
+      *pc++ = c;
+    }
+  }
+  else
+  if (bpp == 2)
+  {
+    unsigned short *pa = (unsigned short *)pimage1;
+    unsigned short *pb = (unsigned short *)pimage2;
+    unsigned short *pc = (unsigned short *)ptemp;
+
+    for (j=0; j<h; j++)
+    for (i=0; i<w; i++)
+    {
+      unsigned int c1 = *pa++;
+      unsigned int c2 = *pb++;
+      if ((c1 != c2) && ((c1>>8) || (c2>>8)))
+      {
+        diffnum++;
+        if ((c2 >> 8) != 0xFF) over_is_possible = 0;
+        if (i<x_min) x_min = i;
+        if (i>x_max) x_max = i;
+        if (j<y_min) y_min = j;
+        if (j>y_max) y_max = j;
+      }
+      else
+        c2 = 0;
+
+      *pc++ = c2;
+    }
+  }
+  else
+  if (bpp == 3)
+  {
+    unsigned char *pa = pimage1;
+    unsigned char *pb = pimage2;
+    unsigned char *pc = ptemp;
+
+    for (j=0; j<h; j++)
+    for (i=0; i<w; i++)
+    {
+      unsigned int c1 = (pa[2]<<16) + (pa[1]<<8) + pa[0];
+      unsigned int c2 = (pb[2]<<16) + (pb[1]<<8) + pb[0];
+      if (c1 != c2)
+      {
+        diffnum++;
+        if (has_tcolor && c2 == tcolor) over_is_possible = 0;
+        if (i<x_min) x_min = i;
+        if (i>x_max) x_max = i;
+        if (j<y_min) y_min = j;
+        if (j>y_max) y_max = j;
+      }
+      else
+        c2 = tcolor;
+
+      memcpy(pc, &c2, 3);
+      pa += 3;
+      pb += 3;
+      pc += 3;
+    }
+  }
+  else
+  if (bpp == 4)
+  {
+    unsigned int *pa = (unsigned int *)pimage1;
+    unsigned int *pb = (unsigned int *)pimage2;
+    unsigned int *pc = (unsigned int *)ptemp;
+
+    for (j=0; j<h; j++)
+    for (i=0; i<w; i++)
+    {
+      unsigned int c1 = *pa++;
+      unsigned int c2 = *pb++;
+      if ((c1 != c2) && ((c1>>24) || (c2>>24)))
+      {
+        diffnum++;
+        if ((c2 >> 24) != 0xFF) over_is_possible = 0;
+        if (i<x_min) x_min = i;
+        if (i>x_max) x_max = i;
+        if (j<y_min) y_min = j;
+        if (j>y_max) y_max = j;
+      }
+      else
+        c2 = 0;
+
+      *pc++ = c2;
+    }
+  }
+
+  if (diffnum == 0)
+  {
+    x0 = y0 = 0;
+    w0 = h0 = 1;
+  }
+  else
+  {
+    x0 = x_min;
+    y0 = y_min;
+    w0 = x_max-x_min+1;
+    h0 = y_max-y_min+1;
+  }
+
+  deflate_rect_op(pimage2, x0, y0, w0, h0, bpp, stride, zbuf_size, n*2);
+
+  if (over_is_possible)
+    deflate_rect_op(ptemp, x0, y0, w0, h0, bpp, stride, zbuf_size, n*2+1);
 }
 
 int main(int argc, char** argv)
@@ -743,14 +847,13 @@ int main(int argc, char** argv)
   char             szFormat[256];
   char             szNext[256];
   unsigned int     i, j, k;
-  unsigned int     width, height, len;
+  unsigned int     width, height;
   unsigned int     x0, y0, w0, h0;
-  unsigned int     x1, y1, w1, h1, try_over;
-  unsigned int     bpp, rowbytes, imagesize, coltype;
+  unsigned int     bpp, rowbytes, imagesize;
   unsigned int     idat_size, zbuf_size, zsize;
   unsigned int     has_tcolor, tcolor, colors;
-  unsigned int     frames, loops, cur, first;
-  unsigned char    dop, bop, r, g, b, a;
+  unsigned int     frames, loops, cur, first, len;
+  unsigned char    coltype, dop, bop, r, g, b, a;
   int              c;
   rgb              palette[256];
   unsigned char    trns[256];
@@ -761,28 +864,38 @@ int main(int argc, char** argv)
   unsigned char  * sp;
   unsigned char  * dp;
   FILE           * f;
-  unsigned char  * img_temp;
+  unsigned char  * over1;
+  unsigned char  * over2;
+  unsigned char  * over3;
+  unsigned char  * temp;
+  unsigned char  * rows;
   image_info     * img;
   char           * szExt;
   unsigned char  * dst;
   short   delay_num = -1;
   short   delay_den = -1;
-  int     input_ext = 0;
+  int     is_png_tga = 0;
   int     keep_palette = 0;
   int     keep_coltype = 0;
+  int     deflate_method = 1;
+  int     iter = 15;
 
-  printf("\nAPNG Assembler 2.7\n\n");
+  printf("\nAPNG Assembler 2.8");
 
   if (argc <= 2)
   {
-    printf("Usage   : apngasm output.png frame001.png [options]\n"
-           "          apngasm output.png frame*.png   [options]\n\n"
-           "Options :\n"
-           "1 10    : frame delay is 1/10 sec. (default)\n"
-           "/l2     : 2 loops (default is 0, forever)\n"
-           "/f      : skip the first frame\n"
-           "/kp     : keep palette\n"
-           "/kc     : keep color type\n");
+    printf("\n\nUsage   : apngasm output.png frame001.png [options]\n"
+               "          apngasm output.png frame*.png   [options]\n\n"
+               "Options :\n"
+               "1 10    : frame delay is 1/10 sec. (default)\n"
+               "-l2     : 2 loops (default is 0, forever)\n"
+               "-f      : skip the first frame\n"
+               "-kp     : keep palette\n"
+               "-kc     : keep color type\n"
+               "-z0     : zlib compression\n"
+               "-z1     : 7zip compression (default)\n"
+               "-z2     : Zopfli compression\n"
+               "-i##    : number of iterations (default -i%d)\n", iter);
     return 1;
   }
 
@@ -813,6 +926,20 @@ int main(int argc, char** argv)
         if (szOption[2] == 'c' || szOption[2] == 'C')
           keep_coltype = 1;
       }
+      if (szOption[1] == 'z' || szOption[1] == 'Z')
+      {
+        if (szOption[2] == '0')
+          deflate_method = 0;
+        if (szOption[2] == '1')
+          deflate_method = 1;
+        if (szOption[2] == '2')
+          deflate_method = 2;
+      }
+      if (szOption[1] == 'i' || szOption[1] == 'I')
+      {
+        iter = atoi(szOption+2);
+        if (iter < 1) iter = 1;
+      }
     }
     else
     {
@@ -829,16 +956,23 @@ int main(int argc, char** argv)
   if (delay_num <= 0) delay_num = 1;
   if (delay_den <= 0) delay_den = 10;
 
+  if (deflate_method == 0)
+    printf(" using ZLIB\n\n");
+  else if (deflate_method == 1)
+    printf(" using 7ZIP with %d iterations\n\n", iter);
+  else if (deflate_method == 2)
+    printf(" using ZOPFLI with %d iterations\n\n", iter);
+
   len = strlen(szImage);
   szExt = szImage + len - 4;
 
   if ((len>4) && (szExt[0]=='.') && (szExt[1]=='p' || szExt[1]=='P') && (szExt[2]=='n' || szExt[2]=='N') && (szExt[3]=='g' || szExt[3]=='G'))
-    input_ext = 1;
+    is_png_tga = 1;
 
   if ((len>4) && (szExt[0]=='.') && (szExt[1]=='t' || szExt[1]=='T') && (szExt[2]=='g' || szExt[2]=='G') && (szExt[3]=='a' || szExt[3]=='A'))
-    input_ext = 2;
+    is_png_tga = 2;
 
-  if (input_ext == 0)
+  if (is_png_tga == 0)
   {
     printf( "Error: '.png' or '.tga' extension expected\n" );
     return 1;
@@ -901,7 +1035,7 @@ int main(int argc, char** argv)
     fclose(f);
     sprintf(szNext, szFormat, cur+frames, szExt);
     f = fopen(szNext, "rb");
-  } 
+  }
   while (f != 0);
 
   img = (image_info *)malloc(frames*sizeof(image_info));
@@ -923,20 +1057,20 @@ int main(int argc, char** argv)
 
   for (i=0; i<frames; i++)
   {
-    int res;
+    unsigned int res;
 
     sprintf(szNext, szFormat, cur+i, szExt);
     printf("reading %s (%d of %d)\n", szNext, i-first+1, frames-first);
 
-    if (input_ext == 1)
+    if (is_png_tga == 1)
       res = LoadPNG(szNext, &img[i]);
     else
       res = LoadTGA(szNext, &img[i]);
 
     if (res)
     {
-      printf("Error: Load%s(%s) failed\n", (input_ext == 1) ? "PNG" : "TGA", szNext);
-      return res;
+      printf("Error: Load%s(%s) failed\n", (is_png_tga == 1) ? "PNG" : "TGA", szNext);
+      return 1;
     }
 
     for (c=img[i].ps; c<256; c++)
@@ -952,16 +1086,15 @@ int main(int argc, char** argv)
     f = fopen(szNext, "rt");
     if (f != 0)
     {
-      char  szStr[256];
-      int   d1, d2;
+      char szStr[256];
       if (fgets(szStr, 256, f) != NULL)
       {
-        res = sscanf(szStr, "delay=%d/%d", &d1, &d2);
-        if (res == 2)
+        int d1, d2;
+        if (sscanf(szStr, "delay=%d/%d", &d1, &d2) == 2)
         {
-         if (d1 != 0) img[i].num = d1; else img[i].num = 1;
-         if (d2 != 0) img[i].den = d2; else img[i].den = 10;
-        } 
+          if (d1 != 0) img[i].num = d1;
+          if (d2 != 0) img[i].den = d2;
+        }
       }
       fclose(f);
     }
@@ -1233,7 +1366,7 @@ int main(int argc, char** argv)
           r = *sp++;
           g = *sp++;
           b = *sp++;
-          if (*sp++ == 0) 
+          if (*sp++ == 0)
             *dp++ = trns[1];
           else
             *dp++ = g;
@@ -1247,7 +1380,7 @@ int main(int argc, char** argv)
 
       if (has_tcolor==0 && colors<256)
         col[colors++].a = 0;
-        
+
       qsort(&col[0], colors, sizeof(COLORS), cmp_colors);
 
       palsize = colors;
@@ -1452,7 +1585,7 @@ int main(int argc, char** argv)
 
       if (has_tcolor==0 && colors<256)
         col[colors++].a = 0;
-        
+
       qsort(&col[0], colors, sizeof(COLORS), cmp_colors);
 
       palsize = colors;
@@ -1516,7 +1649,7 @@ int main(int argc, char** argv)
         g = *sp++;
         a = *sp++;
 
-        if (a != 0) 
+        if (a != 0)
         {
           if (a != 255)
             simple_trans = 0;
@@ -1570,7 +1703,7 @@ int main(int argc, char** argv)
         for (j=0; j<width*height; j++)
         {
           g = *sp++;
-          if (*sp++ == 0) 
+          if (*sp++ == 0)
             *dp++ = trns[1];
           else
             *dp++ = g;
@@ -1584,7 +1717,7 @@ int main(int argc, char** argv)
 
       if (has_tcolor==0 && colors<256)
         col[colors++].a = 0;
-        
+
       qsort(&col[0], colors, sizeof(COLORS), cmp_colors);
 
       palsize = colors;
@@ -1650,7 +1783,7 @@ int main(int argc, char** argv)
       else
         has_tcolor = 1;
     }
-    
+
     if (grayscale && simple_trans && !keep_coltype) /* 3 -> 0 */
     {
       for (i=0; i<256; i++)
@@ -1712,7 +1845,7 @@ int main(int argc, char** argv)
         trns[i]      = col[i].a;
         if (col[i].num != 0)
           palsize = i+1;
-        if (trns[i] != 255) 
+        if (trns[i] != 255)
           trnssize = i+1;
       }
 
@@ -1820,56 +1953,26 @@ int main(int argc, char** argv)
     tcolor = 0;
   }
 
+  next_seq_num = 0;
   rowbytes  = width * bpp;
   imagesize = rowbytes * height;
-  idat_size = (rowbytes + 1) * height;
-  zbuf_size = idat_size + ((idat_size + 7) >> 3) + ((idat_size + 63) >> 6) + 11;
 
-  for (i=0; i<12; i++)
-  {
-    op[i].zstream.data_type = Z_BINARY;
-    op[i].zstream.zalloc = Z_NULL;
-    op[i].zstream.zfree = Z_NULL;
-    op[i].zstream.opaque = Z_NULL;
+  temp  = (unsigned char *)malloc(imagesize);
+  over1 = (unsigned char *)malloc(imagesize);
+  over2 = (unsigned char *)malloc(imagesize);
+  over3 = (unsigned char *)malloc(imagesize);
+  rows  = (unsigned char *)malloc((rowbytes + 1) * height);
 
-    if (i & 1)
-      deflateInit2(&op[i].zstream, Z_BEST_COMPRESSION, 8, 15, 8, Z_FILTERED);
-    else
-      deflateInit2(&op[i].zstream, Z_BEST_COMPRESSION, 8, 15, 8, Z_DEFAULT_STRATEGY);
-
-    op[i].zbuf = (unsigned char *)malloc(zbuf_size);
-    if (op[i].zbuf == NULL)
-    {
-      printf( "Error: not enough memory\n" );
-      return 1;
-    }
-  }
-
-  img_temp = (unsigned char *)malloc(imagesize);
-  zbuf = (unsigned char *)malloc(zbuf_size);
-  row_buf = (unsigned char *)malloc(rowbytes + 1);
-  sub_row = (unsigned char *)malloc(rowbytes + 1);
-  up_row = (unsigned char *)malloc(rowbytes + 1);
-  avg_row = (unsigned char *)malloc(rowbytes + 1);
-  paeth_row = (unsigned char *)malloc(rowbytes + 1);
-
-  if (img_temp && zbuf && row_buf && sub_row && up_row && avg_row && paeth_row)
-  {
-    row_buf[0] = 0;
-    sub_row[0] = 1;
-    up_row[0] = 2;
-    avg_row[0] = 3;
-    paeth_row[0] = 4;
-  }
-  else
+  if (!temp || !over1 || !over2 || !over3 || !rows)
   {
     printf( "Error: not enough memory\n" );
     return 1;
   }
 
+  /* APNG encoding - start */
   if ((f = fopen(szOut, "wb")) != 0)
   {
-    struct IHDR 
+    struct IHDR
     {
       unsigned int    mWidth;
       unsigned int    mHeight;
@@ -1880,13 +1983,13 @@ int main(int argc, char** argv)
       unsigned char   mInterlaceMethod;
     } ihdr = { swap32(width), swap32(height), 8, coltype, 0, 0, 0 };
 
-    struct acTL 
+    struct acTL
     {
       unsigned int    mFrameCount;
       unsigned int    mLoopCount;
     } actl = { swap32(frames-first), swap32(loops) };
 
-    struct fcTL 
+    struct fcTL
     {
       unsigned int    mSeq;
       unsigned int    mWidth;
@@ -1914,6 +2017,50 @@ int main(int argc, char** argv)
     if (trnssize > 0)
       write_chunk(f, "tRNS", trns, trnssize);
 
+    op_zstream1.data_type = Z_BINARY;
+    op_zstream1.zalloc = Z_NULL;
+    op_zstream1.zfree = Z_NULL;
+    op_zstream1.opaque = Z_NULL;
+    deflateInit2(&op_zstream1, Z_BEST_SPEED+1, 8, 15, 8, Z_DEFAULT_STRATEGY);
+
+    op_zstream2.data_type = Z_BINARY;
+    op_zstream2.zalloc = Z_NULL;
+    op_zstream2.zfree = Z_NULL;
+    op_zstream2.opaque = Z_NULL;
+    deflateInit2(&op_zstream2, Z_BEST_SPEED+1, 8, 15, 8, Z_FILTERED);
+
+    fin_zstream.data_type = Z_BINARY;
+    fin_zstream.zalloc = Z_NULL;
+    fin_zstream.zfree = Z_NULL;
+    fin_zstream.opaque = Z_NULL;
+    deflateInit2(&fin_zstream, Z_BEST_COMPRESSION, 8, 15, 8, Z_DEFAULT_STRATEGY);
+
+    idat_size = (rowbytes + 1) * height;
+    zbuf_size = idat_size + ((idat_size + 7) >> 3) + ((idat_size + 63) >> 6) + 11;
+
+    zbuf = (unsigned char *)malloc(zbuf_size);
+    op_zbuf1 = (unsigned char *)malloc(zbuf_size);
+    op_zbuf2 = (unsigned char *)malloc(zbuf_size);
+    row_buf = (unsigned char *)malloc(rowbytes + 1);
+    sub_row = (unsigned char *)malloc(rowbytes + 1);
+    up_row = (unsigned char *)malloc(rowbytes + 1);
+    avg_row = (unsigned char *)malloc(rowbytes + 1);
+    paeth_row = (unsigned char *)malloc(rowbytes + 1);
+
+    if (zbuf && op_zbuf1 && op_zbuf2 && row_buf && sub_row && up_row && avg_row && paeth_row)
+    {
+      row_buf[0] = 0;
+      sub_row[0] = 1;
+      up_row[0] = 2;
+      avg_row[0] = 3;
+      paeth_row[0] = 4;
+    }
+    else
+    {
+      printf( "Error: not enough memory\n" );
+      return 1;
+    }
+
     x0 = 0;
     y0 = 0;
     w0 = width;
@@ -1921,46 +2068,20 @@ int main(int argc, char** argv)
     bop = 0;
 
     printf("saving %s (frame %d of %d)\n", szOut, 1-first, frames-first);
-    deflate_rect(img[0].p, x0, y0, w0, h0, bpp, rowbytes, zbuf_size, 0);
-
-    if (op[0].zstream.total_out <= op[1].zstream.total_out)
-    {
-      zsize = op[0].zstream.total_out;
-      memcpy(zbuf, op[0].zbuf, zsize);
-    }
-    else
-    {
-      zsize = op[1].zstream.total_out;
-      memcpy(zbuf, op[1].zbuf, zsize);
-    }
-
-    deflateReset(&op[0].zstream);
-    op[0].zstream.data_type = Z_BINARY;
-    deflateReset(&op[1].zstream);
-    op[1].zstream.data_type = Z_BINARY;
+    for (j=0; j<6; j++)
+      op[j].valid = 0;
+    deflate_rect_op(img[0].p, x0, y0, w0, h0, bpp, rowbytes, zbuf_size, 0);
+    deflate_rect_fin(deflate_method, iter, zbuf, &zsize, bpp, rowbytes, rows, zbuf_size, 0);
 
     if (first)
     {
       write_IDATs(f, 0, zbuf, zsize, idat_size);
 
       printf("saving %s (frame %d of %d)\n", szOut, 1, frames-first);
-      deflate_rect(img[1].p, x0, y0, w0, h0, bpp, rowbytes, zbuf_size, 0);
-
-      if (op[0].zstream.total_out <= op[1].zstream.total_out)
-      {
-        zsize = op[0].zstream.total_out;
-        memcpy(zbuf, op[0].zbuf, zsize);
-      }
-      else
-      {
-        zsize = op[1].zstream.total_out;
-        memcpy(zbuf, op[1].zbuf, zsize);
-      }
-
-      deflateReset(&op[0].zstream);
-      op[0].zstream.data_type = Z_BINARY;
-      deflateReset(&op[1].zstream);
-      op[1].zstream.data_type = Z_BINARY;
+      for (j=0; j<6; j++)
+        op[j].valid = 0;
+      deflate_rect_op(img[1].p, x0, y0, w0, h0, bpp, rowbytes, zbuf_size, 0);
+      deflate_rect_fin(deflate_method, iter, zbuf, &zsize, bpp, rowbytes, rows, zbuf_size, 0);
     }
 
     for (i=first; i<frames-1; i++)
@@ -1969,58 +2090,43 @@ int main(int argc, char** argv)
       int          op_best;
 
       printf("saving %s (frame %d of %d)\n", szOut, i-first+2, frames-first);
-      for (j=0; j<12; j++)
+      for (j=0; j<6; j++)
         op[j].valid = 0;
 
       /* dispose = none */
-      try_over = get_rect(width, height, img[i].p, img[i+1].p, img_temp, &x1, &y1, &w1, &h1, bpp, has_tcolor, tcolor);
-      deflate_rect(img[i+1].p, x1, y1, w1, h1, bpp, rowbytes, zbuf_size, 0);
-      if (try_over)
-        deflate_rect(img_temp, x1, y1, w1, h1, bpp, rowbytes, zbuf_size, 1);
+      get_rect(width, height, img[i].p, img[i+1].p, over1, bpp, rowbytes, zbuf_size, has_tcolor, tcolor, 0);
 
       /* dispose = background */
       if (has_tcolor)
       {
-        memcpy(img_temp, img[i].p, imagesize);
+        memcpy(temp, img[i].p, imagesize);
         if (coltype == 2)
           for (j=0; j<h0; j++)
             for (k=0; k<w0; k++)
-              memcpy(img_temp + ((j+y0)*width + (k+x0))*3, &tcolor, 3);
+              memcpy(temp + ((j+y0)*width + (k+x0))*3, &tcolor, 3);
         else
           for (j=0; j<h0; j++)
-            memset(img_temp + ((j+y0)*width + x0)*bpp, tcolor, w0*bpp);
+            memset(temp + ((j+y0)*width + x0)*bpp, tcolor, w0*bpp);
 
-        try_over = get_rect(width, height, img_temp, img[i+1].p, img_temp, &x1, &y1, &w1, &h1, bpp, has_tcolor, tcolor);
-
-        deflate_rect(img[i+1].p, x1, y1, w1, h1, bpp, rowbytes, zbuf_size, 2);
-        if (try_over)
-          deflate_rect(img_temp, x1, y1, w1, h1, bpp, rowbytes, zbuf_size, 3);
+        get_rect(width, height, temp, img[i+1].p, over2, bpp, rowbytes, zbuf_size, has_tcolor, tcolor, 1);
       }
 
+      /* dispose = previous */
       if (i > first)
-      {
-        /* dispose = previous */
-        try_over = get_rect(width, height, img[i-1].p, img[i+1].p, img_temp, &x1, &y1, &w1, &h1, bpp, has_tcolor, tcolor);
-        deflate_rect(img[i+1].p, x1, y1, w1, h1, bpp, rowbytes, zbuf_size, 4);
-        if (try_over)
-          deflate_rect(img_temp, x1, y1, w1, h1, bpp, rowbytes, zbuf_size, 5);
-      }
+        get_rect(width, height, img[i-1].p, img[i+1].p, over3, bpp, rowbytes, zbuf_size, has_tcolor, tcolor, 2);
 
-      op_min = op[0].zstream.total_out;
+      op_min = op[0].size;
       op_best = 0;
-      for (j=1; j<12; j++)
+      for (j=1; j<6; j++)
       {
-        if (op[j].valid)
+        if (op[j].size < op_min && op[j].valid)
         {
-          if (op[j].zstream.total_out < op_min)
-          {
-            op_min = op[j].zstream.total_out;
-            op_best = j;
-          }
+          op_min = op[j].size;
+          op_best = j;
         }
       }
 
-      dop = op_best >> 2;
+      dop = op_best >> 1;
 
       fctl.mSeq       = swap32(next_seq_num++);
       fctl.mWidth     = swap32(w0);
@@ -2058,16 +2164,9 @@ int main(int argc, char** argv)
       y0 = op[op_best].y;
       w0 = op[op_best].w;
       h0 = op[op_best].h;
-      bop = (op_best >> 1) & 1;
+      bop = op_best & 1;
 
-      zsize = op[op_best].zstream.total_out;
-      memcpy(zbuf, op[op_best].zbuf, zsize);
-
-      for (j=0; j<12; j++)
-      {
-        deflateReset(&op[j].zstream);
-        op[j].zstream.data_type = Z_BINARY;
-      }
+      deflate_rect_fin(deflate_method, iter, zbuf, &zsize, bpp, rowbytes, rows, zbuf_size, op_best);
     }
 
     if (frames > 1)
@@ -2086,30 +2185,31 @@ int main(int argc, char** argv)
 
     write_IDATs(f, i, zbuf, zsize, idat_size);
 
-    write_chunk(f, "tEXt", png_Software, 27); 
+    write_chunk(f, "tEXt", png_Software, 27);
     write_chunk(f, "IEND", 0, 0);
     fclose(f);
+
+    free(zbuf);
+    free(op_zbuf1);
+    free(op_zbuf2);
+    free(row_buf);
+    free(sub_row);
+    free(up_row);
+    free(avg_row);
+    free(paeth_row);
   }
   else
   {
     printf( "Error: couldn't open file for writing\n" );
     return 1;
   }
+  /* APNG encoding - end */
 
-  for (i=0; i<12; i++)
-  {
-    deflateEnd(&op[i].zstream);
-    if (op[i].zbuf != NULL)
-      free(op[i].zbuf);
-  }
-
-  free(img_temp);
-  free(zbuf);
-  free(row_buf);
-  free(sub_row);
-  free(up_row);
-  free(avg_row);
-  free(paeth_row);
+  free(temp);
+  free(over1);
+  free(over2);
+  free(over3);
+  free(rows);
 
   for (i=0; i<frames; i++)
   {
