@@ -1,16 +1,20 @@
-  APNG Assembler 2.8
+  APNG Assembler 2.9
 
   Creates APNG animation from PNG/TGA image sequence.
 
   http://apngasm.sourceforge.net/
 
-  Copyright (c) 2010-2013 Max Stepin
+  Copyright (c) 2010-2014 Max Stepin
   maxst@users.sourceforge.net
 
   License: zlib license
 
 --------------------------------
 
+
+  Changes in version 2.9:
+
+- Duplicate frames optimization (add frame delays)
 
   Changes in version 2.8:
 

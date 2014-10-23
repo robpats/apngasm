@@ -1,8 +1,8 @@
 
 /* png.c - location for general purpose libpng functions
  *
- * Last changed in libpng 1.6.2 [April 25, 2013]
- * Copyright (c) 1998-2013 Glenn Randers-Pehrson
+ * Last changed in libpng 1.6.14 [October 23, 2014]
+ * Copyright (c) 1998-2014 Glenn Randers-Pehrson
  * (Version 0.96 Copyright (c) 1996, 1997 Andreas Dilger)
  * (Version 0.88 Copyright (c) 1995, 1996 Guy Eric Schalnat, Group 42, Inc.)
  *
@@ -14,7 +14,7 @@
 #include "pngpriv.h"
 
 /* Generate a compiler error if there is an old png.h in the search path. */
-typedef png_libpng_version_1_6_6 Your_png_h_is_not_version_1_6_6;
+typedef png_libpng_version_1_6_14 Your_png_h_is_not_version_1_6_14;
 
 /* Tells libpng that we have already handled the first "num_bytes" bytes
  * of the PNG file signature.  If the PNG data is embedded into another
@@ -165,7 +165,7 @@ png_calculate_crc(png_structrp png_ptr, png_const_bytep ptr, png_size_t length)
 int
 png_user_version_check(png_structrp png_ptr, png_const_charp user_png_ver)
 {
-   if (user_png_ver)
+   if (user_png_ver != NULL)
    {
       int i = 0;
 
@@ -201,6 +201,7 @@ png_user_version_check(png_structrp png_ptr, png_const_charp user_png_ver)
          pos = png_safecat(m, (sizeof m), pos, user_png_ver);
          pos = png_safecat(m, (sizeof m), pos, " but running with ");
          pos = png_safecat(m, (sizeof m), pos, png_libpng_ver);
+         PNG_UNUSED(pos)
 
          png_warning(png_ptr, m);
 #endif
@@ -259,6 +260,10 @@ png_create_png_struct,(png_const_charp user_png_ver, png_voidp error_ptr,
     */
 #  ifdef PNG_USER_MEM_SUPPORTED
       png_set_mem_fn(&create_struct, mem_ptr, malloc_fn, free_fn);
+#  else
+      PNG_UNUSED(mem_ptr)
+      PNG_UNUSED(malloc_fn)
+      PNG_UNUSED(free_fn)
 #  endif
 
    /* (*error_fn) can return control to the caller after the error_ptr is set,
@@ -768,14 +773,14 @@ png_get_copyright(png_const_structrp png_ptr)
 #else
 #  ifdef __STDC__
    return PNG_STRING_NEWLINE \
-     "libpng version 1.6.6 - September 16, 2013" PNG_STRING_NEWLINE \
-     "Copyright (c) 1998-2013 Glenn Randers-Pehrson" PNG_STRING_NEWLINE \
+     "libpng version 1.6.14 - October 23, 2014" PNG_STRING_NEWLINE \
+     "Copyright (c) 1998-2014 Glenn Randers-Pehrson" PNG_STRING_NEWLINE \
      "Copyright (c) 1996-1997 Andreas Dilger" PNG_STRING_NEWLINE \
      "Copyright (c) 1995-1996 Guy Eric Schalnat, Group 42, Inc." \
      PNG_STRING_NEWLINE;
 #  else
-      return "libpng version 1.6.6 - September 16, 2013\
-      Copyright (c) 1998-2013 Glenn Randers-Pehrson\
+      return "libpng version 1.6.14 - October 23, 2014\
+      Copyright (c) 1998-2014 Glenn Randers-Pehrson\
       Copyright (c) 1996-1997 Andreas Dilger\
       Copyright (c) 1995-1996 Guy Eric Schalnat, Group 42, Inc.";
 #  endif
@@ -821,6 +826,63 @@ png_get_header_version(png_const_structrp png_ptr)
 #endif
 }
 
+#ifdef PNG_BUILD_GRAYSCALE_PALETTE_SUPPORTED
+/* NOTE: this routine is not used internally! */
+/* Build a grayscale palette.  Palette is assumed to be 1 << bit_depth
+ * large of png_color.  This lets grayscale images be treated as
+ * paletted.  Most useful for gamma correction and simplification
+ * of code.  This API is not used internally.
+ */
+void PNGAPI
+png_build_grayscale_palette(int bit_depth, png_colorp palette)
+{
+   int num_palette;
+   int color_inc;
+   int i;
+   int v;
+
+   png_debug(1, "in png_do_build_grayscale_palette");
+
+   if (palette == NULL)
+      return;
+
+   switch (bit_depth)
+   {
+      case 1:
+         num_palette = 2;
+         color_inc = 0xff;
+         break;
+
+      case 2:
+         num_palette = 4;
+         color_inc = 0x55;
+         break;
+
+      case 4:
+         num_palette = 16;
+         color_inc = 0x11;
+         break;
+
+      case 8:
+         num_palette = 256;
+         color_inc = 1;
+         break;
+
+      default:
+         num_palette = 0;
+         color_inc = 0;
+         break;
+   }
+
+   for (i = 0, v = 0; i < num_palette; i++, v += color_inc)
+   {
+      palette[i].red = (png_byte)v;
+      palette[i].green = (png_byte)v;
+      palette[i].blue = (png_byte)v;
+   }
+}
+#endif
+
 #ifdef PNG_SET_UNKNOWN_CHUNKS_SUPPORTED
 int PNGAPI
 png_handle_as_unknown(png_const_structrp png_ptr, png_const_bytep chunk_name)
@@ -855,7 +917,8 @@ png_handle_as_unknown(png_const_structrp png_ptr, png_const_bytep chunk_name)
    return PNG_HANDLE_CHUNK_AS_DEFAULT;
 }
 
-#ifdef PNG_HANDLE_AS_UNKNOWN_SUPPORTED
+#if defined(PNG_READ_UNKNOWN_CHUNKS_SUPPORTED) ||\
+   defined(PNG_HANDLE_AS_UNKNOWN_SUPPORTED)
 int /* PRIVATE */
 png_chunk_unknown_handling(png_const_structrp png_ptr, png_uint_32 chunk_name)
 {
@@ -864,7 +927,7 @@ png_chunk_unknown_handling(png_const_structrp png_ptr, png_uint_32 chunk_name)
    PNG_CSTRING_FROM_CHUNK(chunk_string, chunk_name);
    return png_handle_as_unknown(png_ptr, chunk_string);
 }
-#endif /* HANDLE_AS_UNKNOWN */
+#endif /* READ_UNKNOWN_CHUNKS || HANDLE_AS_UNKNOWN */
 #endif /* SET_UNKNOWN_CHUNKS */
 
 #ifdef PNG_READ_SUPPORTED
@@ -1495,10 +1558,10 @@ png_colorspace_check_xy(png_XYZ *XYZ, const png_xy *xy)
 
    /* As a side-effect this routine also returns the XYZ endpoints. */
    result = png_XYZ_from_xy(XYZ, xy);
-   if (result) return result;
+   if (result != 0) return result;
 
    result = png_xy_from_XYZ(&xy_test, XYZ);
-   if (result) return result;
+   if (result != 0) return result;
 
    if (png_colorspace_endpoints_match(xy, &xy_test,
       5/*actually, the math is pretty accurate*/))
@@ -1518,10 +1581,10 @@ png_colorspace_check_XYZ(png_xy *xy, png_XYZ *XYZ)
    png_XYZ XYZtemp;
 
    result = png_XYZ_normalize(XYZ);
-   if (result) return result;
+   if (result != 0) return result;
 
    result = png_xy_from_XYZ(xy, XYZ);
-   if (result) return result;
+   if (result != 0) return result;
 
    XYZtemp = *XYZ;
    return png_colorspace_check_xy(&XYZtemp, xy);
@@ -1562,7 +1625,7 @@ png_colorspace_set_xy_and_XYZ(png_const_structrp png_ptr,
       }
 
       /* Only overwrite with preferred values */
-      if (!preferred)
+      if (preferred == 0)
          return 1; /* ok, but no change */
    }
 
@@ -1679,7 +1742,8 @@ is_ICC_signature_char(png_alloc_size_t it)
       (it >= 97 && it <= 122);
 }
 
-static int is_ICC_signature(png_alloc_size_t it)
+static int
+is_ICC_signature(png_alloc_size_t it)
 {
    return is_ICC_signature_char(it >> 24) /* checks all the top bits */ &&
       is_ICC_signature_char((it >> 16) & 0xff) &&
@@ -1721,6 +1785,7 @@ png_icc_profile_error(png_const_structrp png_ptr, png_colorspacerp colorspace,
 #  endif
    /* The 'reason' is an arbitrary message, allow +79 maximum 195 */
    pos = png_safecat(message, (sizeof message), pos, reason);
+   PNG_UNUSED(pos)
 
    /* This is recoverable, but make it unconditionally an app_error on write to
     * avoid writing invalid ICC profiles into PNG files.  (I.e.  we handle them
@@ -1841,10 +1906,6 @@ png_icc_check_length(png_const_structrp png_ptr, png_colorspacerp colorspace,
       return png_icc_profile_error(png_ptr, colorspace, name, profile_length,
          "too short");
 
-   if (profile_length & 3)
-      return png_icc_profile_error(png_ptr, colorspace, name, profile_length,
-         "invalid length");
-
    return 1;
 }
 
@@ -1864,6 +1925,11 @@ png_icc_check_header(png_const_structrp png_ptr, png_colorspacerp colorspace,
    if (temp != profile_length)
       return png_icc_profile_error(png_ptr, colorspace, name, temp,
          "length does not match profile");
+
+   temp = (png_uint_32) (*(profile+8));
+   if (temp > 3 && (profile_length & 3))
+      return png_icc_profile_error(png_ptr, colorspace, name, profile_length,
+         "invalid length");
 
    temp = png_get_uint_32(profile+128); /* tag count: 12 bytes/tag */
    if (temp > 357913930 || /* (2^32-4-132)/12: maximum possible tag count */
@@ -1979,7 +2045,7 @@ png_icc_check_header(png_const_structrp png_ptr, png_colorspacerp colorspace,
             "invalid embedded Abstract ICC profile");
 
       case 0x6C696E6B: /* 'link' */
-         /* DeviceLink profiles cannnot be interpreted in a non-device specific
+         /* DeviceLink profiles cannot be interpreted in a non-device specific
           * fashion, if an app uses the AToB0Tag in the profile the results are
           * undefined unless the result is sent to the intended device,
           * therefore a DeviceLink profile should not be found embedded in a
@@ -1990,7 +2056,7 @@ png_icc_check_header(png_const_structrp png_ptr, png_colorspacerp colorspace,
 
       case 0x6E6D636C: /* 'nmcl' */
          /* A NamedColor profile is also device specific, however it doesn't
-          * contain an AToB0 tag that is open to misintrepretation.  Almost
+          * contain an AToB0 tag that is open to misinterpretation.  Almost
           * certainly it will fail the tests below.
           */
          (void)png_icc_profile_error(png_ptr, NULL, name, temp,
@@ -2071,7 +2137,7 @@ png_icc_check_tag_table(png_const_structrp png_ptr, png_colorspacerp colorspace,
    return 1; /* success, maybe with warnings */
 }
 
-#ifdef PNG_sRGB_SUPPORTED
+#if defined(PNG_sRGB_SUPPORTED) && PNG_sRGB_PROFILE_CHECKS >= 0
 /* Information about the known ICC sRGB profiles */
 static const struct
 {
@@ -2145,12 +2211,20 @@ png_compare_ICC_profile_with_sRGB(png_const_structrp png_ptr,
     * by sRGB (but maybe defined by a later ICC specification) the read of
     * the profile will fail at that point.
     */
+
    png_uint_32 length = 0;
    png_uint_32 intent = 0x10000; /* invalid */
 #if PNG_sRGB_PROFILE_CHECKS > 1
    uLong crc = 0; /* the value for 0 length data */
 #endif
    unsigned int i;
+
+#ifdef PNG_SET_OPTION_SUPPORTED
+   /* First see if PNG_SKIP_sRGB_CHECK_PROFILE has been set to "on" */
+   if (((png_ptr->options >> PNG_SKIP_sRGB_CHECK_PROFILE) & 3) ==
+               PNG_OPTION_ON)
+      return 0;
+#endif
 
    for (i=0; i < (sizeof png_sRGB_checks) / (sizeof png_sRGB_checks[0]); ++i)
    {
@@ -2221,25 +2295,26 @@ png_compare_ICC_profile_with_sRGB(png_const_structrp png_ptr,
                    */
                   else if (!png_sRGB_checks[i].have_md5)
                   {
-                     png_chunk_report(png_ptr,
-                        "out-of-date sRGB profile with no signature",
+                     png_chunk_report(png_ptr, "out-of-date sRGB profile with"
+                        " no signature",
                         PNG_CHUNK_WARNING);
                   }
 
                   return 1+png_sRGB_checks[i].is_broken;
                }
             }
-         }
 
-#        if PNG_sRGB_PROFILE_CHECKS > 0
-            /* The signature matched, but the profile had been changed in some
-             * way.  This is an apparent violation of the ICC terms of use and,
-             * anyway, probably indicates a data error or uninformed hacking.
-             */
-            if (png_sRGB_checks[i].have_md5)
-               png_benign_error(png_ptr,
-                  "copyright violation: edited ICC profile ignored");
-#        endif
+# if PNG_sRGB_PROFILE_CHECKS > 0
+         /* The signature matched, but the profile had been changed in some
+          * way.  This probably indicates a data error or uninformed hacking.
+          * Fall through to "no match".
+          */
+         png_chunk_report(png_ptr, "Not recognizing known sRGB profile that"
+             " has been edited", 
+             PNG_CHUNK_WARNING);
+         break;
+# endif
+         }
       }
    }
 
@@ -2255,7 +2330,9 @@ png_icc_set_sRGB(png_const_structrp png_ptr,
    /* Is this profile one of the known ICC sRGB profiles?  If it is, just set
     * the sRGB information.
     */
+#if PNG_sRGB_PROFILE_CHECKS >= 0
    if (png_compare_ICC_profile_with_sRGB(png_ptr, profile, adler))
+#endif
       (void)png_colorspace_set_sRGB(png_ptr, colorspace,
          (int)/*already checked*/png_get_uint_32(profile+64));
 }
@@ -2369,53 +2446,46 @@ png_check_IHDR(png_const_structrp png_ptr,
       png_warning(png_ptr, "Image width is zero in IHDR");
       error = 1;
    }
+   else if (width > PNG_UINT_31_MAX)
+   {
+      png_warning(png_ptr, "Invalid image width in IHDR");
+      error = 1;
+   }
+   else
+   {
+#     ifdef PNG_SET_USER_LIMITS_SUPPORTED
+      if (width > png_ptr->user_width_max)
+#     else
+      if (width > PNG_USER_WIDTH_MAX)
+#     endif
+      {
+         png_warning(png_ptr, "Image width exceeds user limit in IHDR");
+         error = 1;
+      }
+   }
 
    if (height == 0)
    {
       png_warning(png_ptr, "Image height is zero in IHDR");
       error = 1;
    }
-
-#  ifdef PNG_SET_USER_LIMITS_SUPPORTED
-   if (width > png_ptr->user_width_max)
-
-#  else
-   if (width > PNG_USER_WIDTH_MAX)
-#  endif
-   {
-      png_warning(png_ptr, "Image width exceeds user limit in IHDR");
-      error = 1;
-   }
-
-#  ifdef PNG_SET_USER_LIMITS_SUPPORTED
-   if (height > png_ptr->user_height_max)
-#  else
-   if (height > PNG_USER_HEIGHT_MAX)
-#  endif
-   {
-      png_warning(png_ptr, "Image height exceeds user limit in IHDR");
-      error = 1;
-   }
-
-   if (width > PNG_UINT_31_MAX)
-   {
-      png_warning(png_ptr, "Invalid image width in IHDR");
-      error = 1;
-   }
-
-   if (height > PNG_UINT_31_MAX)
+   else if (height > PNG_UINT_31_MAX)
    {
       png_warning(png_ptr, "Invalid image height in IHDR");
       error = 1;
    }
-
-   if (width > (PNG_UINT_32_MAX
-                 >> 3)      /* 8-byte RGBA pixels */
-                 - 48       /* bigrowbuf hack */
-                 - 1        /* filter byte */
-                 - 7*8      /* rounding of width to multiple of 8 pixels */
-                 - 8)       /* extra max_pixel_depth pad */
-      png_warning(png_ptr, "Width is too large for libpng to process pixels");
+   else
+   {
+#     ifdef PNG_SET_USER_LIMITS_SUPPORTED
+      if (height > png_ptr->user_height_max)
+#     else
+      if (height > PNG_USER_HEIGHT_MAX)
+#     endif
+      {
+         png_warning(png_ptr, "Image height exceeds user limit in IHDR");
+         error = 1;
+      }
+   }
 
    /* Check other values */
    if (bit_depth != 1 && bit_depth != 2 && bit_depth != 4 &&
@@ -2680,7 +2750,7 @@ png_pow10(int power)
       }
       while (power > 0);
 
-      if (recip) d = 1/d;
+      if (recip != 0) d = 1/d;
    }
    /* else power is 0 and d is 1 */
 
@@ -3090,11 +3160,15 @@ png_fixed(png_const_structrp png_ptr, double fp, png_const_charp text)
    if (r > 2147483647. || r < -2147483648.)
       png_fixed_error(png_ptr, text);
 
+#  ifndef PNG_ERROR_TEXT_SUPPORTED
+      PNG_UNUSED(text)
+#  endif
+
    return (png_fixed_point)r;
 }
 #endif
 
-#if defined(PNG_READ_GAMMA_SUPPORTED) || \
+#if defined(PNG_GAMMA_SUPPORTED) || defined(PNG_COLORSPACE_SUPPORTED) ||\
     defined(PNG_INCH_CONVERSIONS_SUPPORTED) || defined(PNG_READ_pHYs_SUPPORTED)
 /* muldiv functions */
 /* This API takes signed arguments and rounds the result to the nearest
@@ -3199,7 +3273,7 @@ png_muldiv(png_fixed_point_p res, png_fixed_point a, png_int_32 times,
             if (s00 >= (D >> 1))
                ++result;
 
-            if (negative)
+            if (negative != 0)
                result = -result;
 
             /* Check for overflow. */
@@ -3267,27 +3341,29 @@ png_gamma_significant(png_fixed_point gamma_val)
 #endif
 
 #ifdef PNG_READ_GAMMA_SUPPORTED
+#  ifdef PNG_16BIT_SUPPORTED
 /* A local convenience routine. */
 static png_fixed_point
 png_product2(png_fixed_point a, png_fixed_point b)
 {
    /* The required result is 1/a * 1/b; the following preserves accuracy. */
-#ifdef PNG_FLOATING_ARITHMETIC_SUPPORTED
+#    ifdef PNG_FLOATING_ARITHMETIC_SUPPORTED
    double r = a * 1E-5;
    r *= b;
    r = floor(r+.5);
 
    if (r <= 2147483647. && r >= -2147483648.)
       return (png_fixed_point)r;
-#else
+#    else
    png_fixed_point res;
 
    if (png_muldiv(&res, a, b, 100000))
       return res;
-#endif
+#    endif
 
    return 0; /* overflow */
 }
+#  endif /* 16BIT */
 
 /* The inverse of the above. */
 png_fixed_point
@@ -3495,8 +3571,8 @@ png_log16bit(png_uint_32 x)
  * each case only the low 16 bits are relevant - the fraction - since the
  * integer bits (the top 4) simply determine a shift.
  *
- * The worst case is the 16-bit distinction between 65535 and 65534, this
- * requires perhaps spurious accuracty in the decoding of the logarithm to
+ * The worst case is the 16-bit distinction between 65535 and 65534. This
+ * requires perhaps spurious accuracy in the decoding of the logarithm to
  * distinguish log2(65535/65534.5) - 10^-5 or 17 bits.  There is little chance
  * of getting this accuracy in practice.
  *
@@ -3584,7 +3660,7 @@ png_exp8bit(png_fixed_point lg2)
    /* Get a 32-bit value: */
    png_uint_32 x = png_exp(lg2);
 
-   /* Convert the 32-bit value to 0..255 by multiplying by 256-1, note that the
+   /* Convert the 32-bit value to 0..255 by multiplying by 256-1. Note that the
     * second, rounding, step can't overflow because of the first, subtraction,
     * step.
     */
@@ -3592,6 +3668,7 @@ png_exp8bit(png_fixed_point lg2)
    return (png_byte)((x + 0x7fffffU) >> 24);
 }
 
+#ifdef PNG_16BIT_SUPPORTED
 static png_uint_16
 png_exp16bit(png_fixed_point lg2)
 {
@@ -3602,6 +3679,7 @@ png_exp16bit(png_fixed_point lg2)
    x -= x >> 16;
    return (png_uint_16)((x + 32767U) >> 16);
 }
+#endif /* 16BIT */
 #endif /* FLOATING_ARITHMETIC */
 
 png_byte
@@ -3627,6 +3705,7 @@ png_gamma_8bit_correct(unsigned int value, png_fixed_point gamma_val)
    return (png_byte)value;
 }
 
+#ifdef PNG_16BIT_SUPPORTED
 png_uint_16
 png_gamma_16bit_correct(unsigned int value, png_fixed_point gamma_val)
 {
@@ -3649,6 +3728,7 @@ png_gamma_16bit_correct(unsigned int value, png_fixed_point gamma_val)
 
    return (png_uint_16)value;
 }
+#endif /* 16BIT */
 
 /* This does the right thing based on the bit_depth field of the
  * png_struct, interpreting values as 8-bit or 16-bit.  While the result
@@ -3662,10 +3742,16 @@ png_gamma_correct(png_structrp png_ptr, unsigned int value,
    if (png_ptr->bit_depth == 8)
       return png_gamma_8bit_correct(value, gamma_val);
 
+#ifdef PNG_16BIT_SUPPORTED
    else
       return png_gamma_16bit_correct(value, gamma_val);
+#else
+      /* should not reach this */
+      return 0;
+#endif /* 16BIT */
 }
 
+#ifdef PNG_16BIT_SUPPORTED
 /* Internal function to build a single 16-bit table - the table consists of
  * 'num' 256 entry subtables, where 'num' is determined by 'shift' - the amount
  * to shift the input values right (or 16-number_of_signifiant_bits).
@@ -3714,7 +3800,7 @@ png_build_16bit_table(png_structrp png_ptr, png_uint_16pp *ptable,
                double d = floor(65535*pow(ig/(double)max, gamma_val*.00001)+.5);
                sub_table[j] = (png_uint_16)d;
 #           else
-               if (shift)
+               if (shift != 0)
                   ig = (ig * 65535U + max_by_2)/max;
 
                sub_table[j] = png_gamma_16bit_correct(ig, gamma_val);
@@ -3730,7 +3816,7 @@ png_build_16bit_table(png_structrp png_ptr, png_uint_16pp *ptable,
          {
             png_uint_32 ig = (j << (8-shift)) + i;
 
-            if (shift)
+            if (shift != 0)
                ig = (ig * 65535U + max_by_2)/max;
 
             sub_table[j] = (png_uint_16)ig;
@@ -3756,7 +3842,7 @@ png_build_16to8_table(png_structrp png_ptr, png_uint_16pp *ptable,
 
    /* 'num' is the number of tables and also the number of low bits of low
     * bits of the input 16-bit value used to select a table.  Each table is
-    * itself index by the high 8 bits of the value.
+    * itself indexed by the high 8 bits of the value.
     */
    for (i = 0; i < num; i++)
       table[i] = (png_uint_16p)png_malloc(png_ptr,
@@ -3804,10 +3890,11 @@ png_build_16to8_table(png_structrp png_ptr, png_uint_16pp *ptable,
       last++;
    }
 }
+#endif /* 16BIT */
 
 /* Build a single 8-bit table: same as the 16-bit case but much simpler (and
  * typically much faster).  Note that libpng currently does no sBIT processing
- * (apparently contrary to the spec) so a 256 entry table is always generated.
+ * (apparently contrary to the spec) so a 256-entry table is always generated.
  */
 static void
 png_build_8bit_table(png_structrp png_ptr, png_bytepp ptable,
@@ -3832,6 +3919,7 @@ png_destroy_gamma_table(png_structrp png_ptr)
    png_free(png_ptr, png_ptr->gamma_table);
    png_ptr->gamma_table = NULL;
 
+#ifdef PNG_16BIT_SUPPORTED
    if (png_ptr->gamma_16_table != NULL)
    {
       int i;
@@ -3843,6 +3931,7 @@ png_destroy_gamma_table(png_structrp png_ptr)
    png_free(png_ptr, png_ptr->gamma_16_table);
    png_ptr->gamma_16_table = NULL;
    }
+#endif /* 16BIT */
 
 #if defined(PNG_READ_BACKGROUND_SUPPORTED) || \
    defined(PNG_READ_ALPHA_MODE_SUPPORTED) || \
@@ -3852,6 +3941,7 @@ png_destroy_gamma_table(png_structrp png_ptr)
    png_free(png_ptr, png_ptr->gamma_to_1);
    png_ptr->gamma_to_1 = NULL;
 
+#ifdef PNG_16BIT_SUPPORTED
    if (png_ptr->gamma_16_from_1 != NULL)
    {
       int i;
@@ -3874,6 +3964,7 @@ png_destroy_gamma_table(png_structrp png_ptr)
    png_free(png_ptr, png_ptr->gamma_16_to_1);
    png_ptr->gamma_16_to_1 = NULL;
    }
+#endif /* 16BIT */
 #endif /* READ_BACKGROUND || READ_ALPHA_MODE || RGB_TO_GRAY */
 }
 
@@ -3919,6 +4010,7 @@ png_build_gamma_table(png_structrp png_ptr, int bit_depth)
      }
 #endif /* READ_BACKGROUND || READ_ALPHA_MODE || RGB_TO_GRAY */
   }
+#ifdef PNG_16BIT_SUPPORTED
   else
   {
      png_byte shift, sig_bit;
@@ -3943,7 +4035,7 @@ png_build_gamma_table(png_structrp png_ptr, int bit_depth)
       * Where 'iv' is the input color value and 'ov' is the output value -
       * pow(iv, gamma).
       *
-      * Thus the gamma table consists of up to 256 256 entry tables.  The table
+      * Thus the gamma table consists of up to 256 256-entry tables.  The table
       * is selected by the (8-gamma_shift) most significant of the low 8 bits of
       * the color value then indexed by the upper 8 bits:
       *
@@ -3975,24 +4067,20 @@ png_build_gamma_table(png_structrp png_ptr, int bit_depth)
 
      png_ptr->gamma_shift = shift;
 
-#ifdef PNG_16BIT_SUPPORTED
      /* NOTE: prior to 1.5.4 this test used to include PNG_BACKGROUND (now
       * PNG_COMPOSE).  This effectively smashed the background calculation for
       * 16-bit output because the 8-bit table assumes the result will be reduced
       * to 8 bits.
       */
      if (png_ptr->transformations & (PNG_16_TO_8 | PNG_SCALE_16_TO_8))
-#endif
          png_build_16to8_table(png_ptr, &png_ptr->gamma_16_table, shift,
          png_ptr->screen_gamma > 0 ? png_product2(png_ptr->colorspace.gamma,
          png_ptr->screen_gamma) : PNG_FP_1);
 
-#ifdef PNG_16BIT_SUPPORTED
      else
          png_build_16bit_table(png_ptr, &png_ptr->gamma_16_table, shift,
          png_ptr->screen_gamma > 0 ? png_reciprocal2(png_ptr->colorspace.gamma,
          png_ptr->screen_gamma) : PNG_FP_1);
-#endif
 
 #if defined(PNG_READ_BACKGROUND_SUPPORTED) || \
    defined(PNG_READ_ALPHA_MODE_SUPPORTED) || \
@@ -4012,10 +4100,11 @@ png_build_gamma_table(png_structrp png_ptr, int bit_depth)
      }
 #endif /* READ_BACKGROUND || READ_ALPHA_MODE || RGB_TO_GRAY */
   }
+#endif /* 16BIT */
 }
 #endif /* READ_GAMMA */
 
-/* HARDWARE OPTION SUPPORT */
+/* HARDWARE OR SOFTWARE OPTION SUPPORT */
 #ifdef PNG_SET_OPTION_SUPPORTED
 int PNGAPI
 png_set_option(png_structrp png_ptr, int option, int onoff)
@@ -4054,7 +4143,7 @@ png_set_option(png_structrp png_ptr, int option, int onoff)
  *
  *    error: -0.513727 - 0.607759, 308 (0.469978%) of readings inexact
  *
- * In all cases the inexact readings are off by one.
+ * In all cases the inexact readings are only off by one.
  */
 
 #ifdef PNG_SIMPLIFIED_READ_SUPPORTED
@@ -4094,8 +4183,7 @@ const png_uint_16 png_sRGB_table[256] =
    57105,57646,58190,58737,59287,59840,60396,60955,
    61517,62082,62650,63221,63795,64372,64952,65535
 };
-
-#endif /* simplified read only */
+#endif /* PNG_SIMPLIFIED_READ_SUPPORTED */
 
 /* The base/delta tables are required for both read and write (but currently
  * only the simplified versions.)

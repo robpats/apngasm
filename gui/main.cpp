@@ -1,10 +1,10 @@
-/* APNG Assembler 2.8
+/* APNG Assembler 2.9
  *
  * This program creates APNG animation from PNG/TGA image sequence.
  *
  * http://apngasm.sourceforge.net/
  *
- * Copyright (c) 2009-2013 Max Stepin
+ * Copyright (c) 2009-2014 Max Stepin
  * maxst at users.sourceforge.net
  *
  * zlib license
@@ -41,19 +41,19 @@ FILE_INFO * pInputFiles;
 UINT        nNumInputFiles;
 wchar_t     szOutput[MAX_PATH+1];
 
-int            deflate_method;
-int            iter1;
-int            iter2;
-int            keep_palette;
-int            keep_coltype;
-int            first;
-int            loops;
-unsigned short delay_num, delay_den;
+int         deflate_method;
+int         iter1;
+int         iter2;
+int         keep_palette;
+int         keep_coltype;
+int         first;
+int         loops;
+int         delay_num, delay_den;
 
 PFUNC_PARAMS   pParams;
 HANDLE         hConvertThread;
 DWORD          dwThreadId;
-DWORD WINAPI   ConvertFunction(LPVOID lpParam);
+DWORD WINAPI   CreateAPNG(FILE_INFO * pInputFiles, UINT frames, wchar_t * szOut, int deflate_method, int iter, int keep_palette, int keep_coltype, int first, int loops);
 
 void EnableInterface(BOOL bEnable)
 {
@@ -67,16 +67,42 @@ void EnableInterface(BOOL bEnable)
   EnableWindow(GetDlgItem(hMainDlg, IDC_BUTTON_MAKE), bEnable && nNumInputFiles != 0 && szOutput[0] != 0);
 }
 
+DWORD WINAPI ConvertFunction(LPVOID lpParam)
+{
+  wchar_t szOutput[MAX_PATH+1];
+  FILE_INFO * pInput = ((PFUNC_PARAMS)lpParam)->pInputFiles;
+  UINT nNum = ((PFUNC_PARAMS)lpParam)->nNumInputFiles;
+  wchar_t * szOut = ((PFUNC_PARAMS)lpParam)->szOutput;
+  int deflate_method = ((PFUNC_PARAMS)lpParam)->deflate_method;
+  int iter = ((PFUNC_PARAMS)lpParam)->iter;
+  int keep_palette = ((PFUNC_PARAMS)lpParam)->keep_palette;
+  int keep_coltype = ((PFUNC_PARAMS)lpParam)->keep_coltype;
+  int first = ((PFUNC_PARAMS)lpParam)->first;
+  int loops = ((PFUNC_PARAMS)lpParam)->loops;
+
+  if (wcschr(szOut, L'\\') == NULL)
+    swprintf(szOutput, MAX_PATH, L"%s%s%s", pInput->szDrive, pInput->szDir, szOut);
+  else
+    wcscpy(szOutput, szOut);
+
+  SendDlgItemMessage(hMainDlg, IDC_PROGRESS1, PBM_SETRANGE, 0, MAKELPARAM(0, 48));
+  SendDlgItemMessage(hMainDlg, IDC_PROGRESS1, PBM_SETPOS, 0, 0);
+
+  EnableInterface(FALSE);
+  DWORD dwRes = CreateAPNG(pInput, nNum, szOutput, deflate_method, iter, keep_palette, keep_coltype, first, loops);
+  EnableInterface(TRUE);
+
+  SetDlgItemText(hMainDlg, IDC_PERCENT, (dwRes == 0) ? L"Done" : L"Error");
+  return dwRes;
+}
+
 LRESULT CALLBACK PlaybackDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
-  wchar_t szStr[MAX_PATH+1];
-
   switch (uMsg)
   {
     case WM_INITDIALOG:
       CheckDlgButton(hWnd, IDC_PLAY, loops==0 ? 1 : 0);
-      swprintf(szStr, L"%d", loops);
-      SetDlgItemText(hWnd, IDC_EDIT_LOOPS, szStr);
+      SetDlgItemInt(hWnd, IDC_EDIT_LOOPS, loops, TRUE);
       EnableWindow(GetDlgItem(hWnd, IDC_EDIT_LOOPS), loops != 0);
       CheckDlgButton(hWnd, IDC_SKIP, first);
       return TRUE;
@@ -89,8 +115,7 @@ LRESULT CALLBACK PlaybackDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         case IDOK:
           if (!IsDlgButtonChecked(hWnd, IDC_PLAY))
           {
-            GetDlgItemText(hWnd, IDC_EDIT_LOOPS, szStr, MAX_PATH);
-            loops = _wtoi(szStr);
+            loops = GetDlgItemInt(hWnd, IDC_EDIT_LOOPS, NULL, TRUE);
             if (loops < 0) loops = 0;
           }
           else
@@ -113,18 +138,14 @@ LRESULT CALLBACK PlaybackDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
 
 LRESULT CALLBACK CompressionDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
-  wchar_t szStr[MAX_PATH+1];
-
   switch (uMsg)
   {
     case WM_INITDIALOG:
       CheckDlgButton(hWnd, IDC_RADIO1, deflate_method==0 ? 1 : 0);
       CheckDlgButton(hWnd, IDC_RADIO2, deflate_method==1 ? 1 : 0);
       CheckDlgButton(hWnd, IDC_RADIO3, deflate_method==2 ? 1 : 0);
-      swprintf(szStr, L"%d", iter1);
-      SetDlgItemText(hWnd, IDC_EDIT_I1, szStr);
-      swprintf(szStr, L"%d", iter2);
-      SetDlgItemText(hWnd, IDC_EDIT_I2, szStr);
+      SetDlgItemInt(hWnd, IDC_EDIT_I1, iter1, TRUE);
+      SetDlgItemInt(hWnd, IDC_EDIT_I2, iter2, TRUE);
       EnableWindow(GetDlgItem(hWnd, IDC_EDIT_I1), deflate_method==1);
       EnableWindow(GetDlgItem(hWnd, IDC_EDIT_I2), deflate_method==2);
       CheckDlgButton(hWnd, IDC_OPT_PAL, 1-keep_palette);
@@ -158,11 +179,9 @@ LRESULT CALLBACK CompressionDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
                 deflate_method = 1;
               if (IsDlgButtonChecked(hWnd, IDC_RADIO3))
                 deflate_method = 2;
-              GetDlgItemText(hWnd, IDC_EDIT_I1, szStr, MAX_PATH);
-              iter1 = _wtoi(szStr);
+              iter1 = GetDlgItemInt(hWnd, IDC_EDIT_I1, NULL, TRUE);
               if (iter1 < 1) iter1 = 1;
-              GetDlgItemText(hWnd, IDC_EDIT_I2, szStr, MAX_PATH);
-              iter2 = _wtoi(szStr);
+              iter2 = GetDlgItemInt(hWnd, IDC_EDIT_I2, NULL, TRUE);
               if (iter2 < 1) iter2 = 1;
               keep_palette = 1-IsDlgButtonChecked(hWnd, IDC_OPT_PAL);
               keep_coltype = 1-IsDlgButtonChecked(hWnd, IDC_OPT_COLTYPE);
@@ -189,10 +208,8 @@ LRESULT CALLBACK DelaysAllDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
   switch (uMsg)
   {
     case WM_INITDIALOG:
-      swprintf(szStr, MAX_PATH, L"%d", delay_num);
-      SetDlgItemText(hWnd, IDC_EDIT_D1, szStr);
-      swprintf(szStr, MAX_PATH, L"%d", delay_den);
-      SetDlgItemText(hWnd, IDC_EDIT_D2, szStr);
+      SetDlgItemInt(hWnd, IDC_EDIT_D1, delay_num, TRUE);
+      SetDlgItemInt(hWnd, IDC_EDIT_D2, delay_den, TRUE);
       return TRUE;
     case WM_CLOSE:
       EndDialog(hWnd, IDCANCEL);
@@ -202,10 +219,8 @@ LRESULT CALLBACK DelaysAllDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
       switch (LOWORD(wParam))
       {
         case IDOK:
-          GetDlgItemText(hWnd, IDC_EDIT_D1, szStr, MAX_PATH);
-          d1 = _wtoi(szStr);
-          GetDlgItemText(hWnd, IDC_EDIT_D2, szStr, MAX_PATH);
-          d2 = _wtoi(szStr);
+          d1 = GetDlgItemInt(hWnd, IDC_EDIT_D1, NULL, TRUE);
+          d2 = GetDlgItemInt(hWnd, IDC_EDIT_D2, NULL, TRUE);
           if (d1>=0 && d2>=0)
           {
             UINT i;
@@ -244,10 +259,8 @@ LRESULT CALLBACK DelaysSelectDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
   switch (uMsg)
   {
     case WM_INITDIALOG:
-      swprintf(szStr, MAX_PATH, L"%d", delay_num);
-      SetDlgItemText(hWnd, IDC_EDIT_D1, szStr);
-      swprintf(szStr, MAX_PATH, L"%d", delay_den);
-      SetDlgItemText(hWnd, IDC_EDIT_D2, szStr);
+      SetDlgItemInt(hWnd, IDC_EDIT_D1, delay_num, TRUE);
+      SetDlgItemInt(hWnd, IDC_EDIT_D2, delay_den, TRUE);
       return TRUE;
     case WM_CLOSE:
       EndDialog(hWnd, IDCANCEL);
@@ -257,10 +270,8 @@ LRESULT CALLBACK DelaysSelectDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
       switch (LOWORD(wParam))
       {
         case IDOK:
-          GetDlgItemText(hWnd, IDC_EDIT_D1, szStr, MAX_PATH);
-          d1 = _wtoi(szStr);
-          GetDlgItemText(hWnd, IDC_EDIT_D2, szStr, MAX_PATH);
-          d2 = _wtoi(szStr);
+          d1 = GetDlgItemInt(hWnd, IDC_EDIT_D1, NULL, TRUE);
+          d2 = GetDlgItemInt(hWnd, IDC_EDIT_D2, NULL, TRUE);
           if (d1>=0 && d2>=0)
           {
             UINT i;
