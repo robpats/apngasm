@@ -2,6 +2,7 @@
 *.o
 *.lo
 *.obj
+*.iobj
 
 # Linker output
 *.ilk
@@ -31,6 +32,7 @@
 # Debug files
 *.idb
 *.pdb
+*.ipdb
 
 # Build results
 build/
@@ -40,12 +42,16 @@ x64/
 x86/
 [Ww][Ii][Nn]32/
 *.log
+*.tlog
 
 # User-specific files
+.vs/
 *.suo
 *.user
 
 # Cache files
 *.ncb
+*.opendb
 *.opensdf
 *.sdf
+*.VC.db
