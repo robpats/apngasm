@@ -1,10 +1,10 @@
-/* APNG Assembler 2.9
+/* APNG Assembler 2.91
  *
  * This program creates APNG animation from PNG/TGA image sequence.
  *
  * http://apngasm.sourceforge.net/
  *
- * Copyright (c) 2009-2014 Max Stepin
+ * Copyright (c) 2009-2016 Max Stepin
  * maxst at users.sourceforge.net
  *
  * zlib license
@@ -35,7 +35,7 @@ typedef struct { wchar_t szPath[MAX_PATH+1];
                  wchar_t szExt[_MAX_EXT+1];
                  wchar_t szPrefix[_MAX_FNAME+1];
                  int num, delay_num, delay_den;
-                 unsigned int is_png_tga, w, h;
+                 unsigned int w, h;
                } FILE_INFO;
 
 typedef struct { FILE_INFO * pInputFiles;

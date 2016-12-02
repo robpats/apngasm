@@ -1,10 +1,10 @@
-/* APNG Assembler 2.9
+/* APNG Assembler 2.91
  *
  * This program creates APNG animation from PNG/TGA image sequence.
  *
  * http://apngasm.sourceforge.net/
  *
- * Copyright (c) 2009-2014 Max Stepin
+ * Copyright (c) 2009-2016 Max Stepin
  * maxst at users.sourceforge.net
  *
  * zlib license
@@ -128,6 +128,9 @@ LRESULT CALLBACK PlaybackDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         case IDC_PLAY:
           EnableWindow(GetDlgItem(hWnd, IDC_EDIT_LOOPS), !IsDlgButtonChecked(hWnd, IDC_PLAY));
           return TRUE;
+        case IDCANCEL:
+          EndDialog(hWnd, IDCANCEL);
+          return TRUE;
         default:
           return FALSE;
       }
@@ -189,6 +192,9 @@ LRESULT CALLBACK CompressionDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
               SetDlgItemText(hMainDlg, IDC_PERCENT, L"");
               EndDialog(hWnd, IDOK);
               return TRUE;
+            case IDCANCEL:
+              EndDialog(hWnd, IDCANCEL);
+              return TRUE;
             default:
               return FALSE;
           }
@@ -243,6 +249,10 @@ LRESULT CALLBACK DelaysAllDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
           EndDialog(hWnd, IDOK);
           SetFocus(GetDlgItem(hMainDlg, IDC_LIST1));
           return TRUE;
+        case IDCANCEL:
+          EndDialog(hWnd, IDCANCEL);
+          SetFocus(GetDlgItem(hMainDlg, IDC_LIST1));
+          return TRUE;
         default:
           return FALSE;
       }
@@ -295,6 +305,10 @@ LRESULT CALLBACK DelaysSelectDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
           EndDialog(hWnd, IDOK);
           SetFocus(GetDlgItem(hMainDlg, IDC_LIST1));
           return TRUE;
+        case IDCANCEL:
+          EndDialog(hWnd, IDCANCEL);
+          SetFocus(GetDlgItem(hMainDlg, IDC_LIST1));
+          return TRUE;
         default:
           return FALSE;
       }
@@ -343,7 +357,7 @@ void DropFiles(HDROP hDrop)
           if (!_wcsnicmp(pFileInfo->szExt, L".txt", 4))
             continue;
 
-          pFileInfo->is_png_tga = 0;
+          int is_png_tga = 0;
           if ((f = _wfopen(pFileInfo->szPath, L"rb")) != 0)
           {
             unsigned char header[24];
@@ -351,27 +365,27 @@ void DropFiles(HDROP hDrop)
             if (fread(header, 1, 24, f) == 24)
             {
               if (!memcmp(header, png_head, 8))
-                pFileInfo->is_png_tga = 1;
+                is_png_tga = 1;
               else
-              if (header[1]==0 && (header[2] & 7)==3 && header[16]==8)
-                pFileInfo->is_png_tga = 2;
+              if ((header[2] & 7) == 1 && header[16] == 8 && header[1] == 1 && header[7] == 24)
+                is_png_tga = 2;
               else
-              if (header[1]==0 && (header[2] & 7)==2 && header[16]==24)
-                pFileInfo->is_png_tga = 2;
+              if ((header[2] & 7) == 3 && header[16] == 8)
+                is_png_tga = 2;
               else
-              if (header[1]==0 && (header[2] & 7)==2 && header[16]==32)
-                pFileInfo->is_png_tga = 2;
+              if ((header[2] & 7) == 2 && header[16] == 24)
+                is_png_tga = 2;
               else
-              if (header[1]==1 && (header[2] & 7)==1 && header[7]==24 && header[16]==8)
-                pFileInfo->is_png_tga = 2;
+              if ((header[2] & 7) == 2 && header[16] == 32)
+                is_png_tga = 2;
 
-              if (pFileInfo->is_png_tga == 1)
+              if (is_png_tga == 1)
               {
                 pFileInfo->w = (((header[16]*256 + header[17])*256) + header[18])*256 + header[19];
                 pFileInfo->h = (((header[20]*256 + header[21])*256) + header[22])*256 + header[23];
               }
               else
-              if (pFileInfo->is_png_tga == 2)
+              if (is_png_tga == 2)
               {
                 pFileInfo->w = header[12] + header[13]*256;
                 pFileInfo->h = header[14] + header[15]*256;
@@ -379,7 +393,7 @@ void DropFiles(HDROP hDrop)
             }
             fclose(f);
           }
-          if (pFileInfo->is_png_tga == 0)
+          if (is_png_tga == 0)
             continue;
 
           pFileInfo->delay_num = delay_num;
@@ -492,11 +506,11 @@ void RemoveSelected()
       if (ListView_GetItemState(hwndLV, i, LVIS_SELECTED) == LVIS_SELECTED)
       {
         ListView_DeleteItem(hwndLV, i);
-        if (i < nNumInputFiles - 1)
+        if (i < (int)(nNumInputFiles - 1))
         {
           FILE_INFO * pDst = pInputFiles + i;
           FILE_INFO * pSrc = pDst + 1;
-          for (int j = i; j < nNumInputFiles - 1; ++j)
+          for (int j = i; j < (int)(nNumInputFiles - 1); ++j)
             memcpy(pDst++, pSrc++, sizeof(FILE_INFO));
         }
         nNumInputFiles--;
@@ -540,6 +554,18 @@ LRESULT CALLBACK MainDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
       delay_den = 10;
       DragAcceptFiles(hMainDlg, TRUE);
       {
+        HMODULE hModule = GetModuleHandle(TEXT("user32.dll"));
+        if (hModule != NULL)
+        {
+          typedef BOOL (WINAPI *PFN)(HWND, UINT, DWORD, PCHANGEFILTERSTRUCT);
+          PFN pfnChangeWindowMessageFilterEx = (PFN)GetProcAddress(hModule, "ChangeWindowMessageFilterEx");
+          if (pfnChangeWindowMessageFilterEx != NULL)
+          {
+            (*pfnChangeWindowMessageFilterEx)(hMainDlg, WM_DROPFILES, MSGFLT_ALLOW, NULL);
+            (*pfnChangeWindowMessageFilterEx)(hMainDlg, WM_COPYDATA,  MSGFLT_ALLOW, NULL);
+            (*pfnChangeWindowMessageFilterEx)(hMainDlg, 0x0049,       MSGFLT_ALLOW, NULL);
+          }
+        }
         HWND hwndLV = GetDlgItem(hMainDlg, IDC_LIST1);
         ListView_SetExtendedListViewStyle(hwndLV, LVS_EX_FULLROWSELECT);
         LVCOLUMN lvc = { 0 };
