@@ -353,7 +353,7 @@ void deflate_rect_op(Image * image, int x, int y, int w, int h, int bpp, int zbu
   deflateReset(&op_zstream2);
 }
 
-void get_rect(unsigned int w, unsigned int h, Image * image1, Image * image2, Image * temp, unsigned int bpp, int zbuf_size, unsigned int has_tcolor, unsigned int tcolor, int n)
+void get_rect(unsigned int w, unsigned int h, Image * image1, Image * image2, Image * temp, unsigned char coltype, unsigned int bpp, int zbuf_size, unsigned int has_tcolor, unsigned int tcolor, unsigned char * tr, int n)
 {
   unsigned int   i, j, x0, y0, w0, h0;
   unsigned int   x_min = w-1;
@@ -379,7 +379,8 @@ void get_rect(unsigned int w, unsigned int h, Image * image1, Image * image2, Im
         if (*pa++ != c)
         {
           diffnum++;
-          if (has_tcolor && c == tcolor) over_is_possible = 0;
+          if (coltype == 0 && has_tcolor && c == tcolor) over_is_possible = 0;
+          if (coltype == 3 && tr[c] != 0xFF) over_is_possible = 0;
           if (i<x_min) x_min = i;
           if (i>x_max) x_max = i;
           if (j<y_min) y_min = j;
@@ -694,7 +695,7 @@ int save_apng(wchar_t * szOut, std::vector<Image>& img, unsigned int loops, unsi
       op[j].valid = 0;
 
     /* dispose = none */
-    get_rect(width, height, &img[i], &img[i+1], &over1, bpp, zbuf_size, has_tcolor, tcolor, 0);
+    get_rect(width, height, &img[i], &img[i+1], &over1, coltype, bpp, zbuf_size, has_tcolor, tcolor, img[0].tr, 0);
 
     /* dispose = background */
     if (has_tcolor)
@@ -709,12 +710,12 @@ int save_apng(wchar_t * szOut, std::vector<Image>& img, unsigned int loops, unsi
         for (j=0; j<h0; j++)
           memset(temp.rows[j+y0] + x0*bpp, tcolor, w0*bpp);
 
-      get_rect(width, height, &temp, &img[i+1], &over2, bpp, zbuf_size, has_tcolor, tcolor, 1);
+      get_rect(width, height, &temp, &img[i+1], &over2, coltype, bpp, zbuf_size, has_tcolor, tcolor, img[0].tr, 1);
     }
 
     /* dispose = previous */
     if (i > first)
-      get_rect(width, height, &rest, &img[i+1], &over3, bpp, zbuf_size, has_tcolor, tcolor, 2);
+      get_rect(width, height, &rest, &img[i+1], &over3, coltype, bpp, zbuf_size, has_tcolor, tcolor, img[0].tr, 2);
 
     op_min = op[0].size;
     op_best = 0;
